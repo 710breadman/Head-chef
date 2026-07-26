@@ -1,0 +1,9 @@
+{
+  "models": {
+    "example-model:latest": {
+      "capabilities": ["analysis", "planning"],
+      "context_tokens": 16384,
+      "notes": ["owner-confirmed"]
+    }
+  }
+}

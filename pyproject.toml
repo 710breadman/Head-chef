@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "head-chef"
+version = "0.1.0"
+description = "A transparent local-model router, token governor, and job-card generator for Codex-led projects."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "710breadman" }]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Operating System :: Microsoft :: Windows",
+]
+
+[project.scripts]
+head-chef = "head_chef.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
