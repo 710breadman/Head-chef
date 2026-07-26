@@ -15,6 +15,7 @@ class Settings:
     reserved_output_tokens: int = 2048
     safety_margin_tokens: int = 1024
     request_timeout_seconds: int = 180
+    request_retries: int = 2
     max_benchmark_models: int = 8
 
     @classmethod

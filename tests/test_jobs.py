@@ -48,7 +48,7 @@ class JobCardTests(unittest.TestCase):
         )
         prompt = render_worker_prompt(create_job_card("x", "Review", decision))
         self.assertIn("Do not claim commands or tests were run", prompt)
-        self.assertIn("RISKS, VERIFICATION NEEDED, and BLOCKERS", prompt)
+        self.assertIn("risks, verification needs, and true blockers", prompt)
         self.assertIn("Copy every acceptance criterion verbatim", prompt)
         self.assertIn("Use blockers only for conditions that prevent completion", prompt)
 

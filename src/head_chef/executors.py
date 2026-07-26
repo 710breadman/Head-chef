@@ -64,6 +64,7 @@ def execute_job(
                 **({"num_ctx": job.context_limit_tokens} if job.context_limit_tokens else {}),
                 **({"num_predict": job.output_limit_tokens} if job.output_limit_tokens else {}),
             },
+            think=False,
             timeout_seconds=timeout_seconds,
         ),
     )

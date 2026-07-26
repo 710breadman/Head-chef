@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Any
 import base64
 from urllib import error, request
@@ -18,9 +19,10 @@ class OllamaResponse:
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, timeout_seconds: int = 180) -> None:
+    def __init__(self, base_url: str, timeout_seconds: int = 180, request_retries: int = 2) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.request_retries = max(0, request_retries)
 
     def _request(
         self,
@@ -41,14 +43,21 @@ class OllamaClient:
             method=method,
             headers=headers,
         )
-        try:
-            with request.urlopen(req, timeout=timeout_seconds or self.timeout_seconds) as response:
-                decoded = response.read().decode("utf-8")
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise OllamaError(f"Ollama HTTP {exc.code}: {detail}") from exc
-        except (error.URLError, TimeoutError, OSError) as exc:
-            raise OllamaError(f"Cannot reach Ollama at {self.base_url}: {exc}") from exc
+        decoded = ""
+        for attempt in range(self.request_retries + 1):
+            try:
+                with request.urlopen(req, timeout=timeout_seconds or self.timeout_seconds) as response:
+                    decoded = response.read().decode("utf-8")
+                break
+            except error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                retryable = exc.code in {408, 429} or exc.code >= 500
+                if not retryable or attempt >= self.request_retries:
+                    raise OllamaError(f"Ollama HTTP {exc.code}: {detail}") from exc
+            except (error.URLError, TimeoutError, OSError) as exc:
+                if attempt >= self.request_retries:
+                    raise OllamaError(f"Cannot reach Ollama at {self.base_url}: {exc}") from exc
+            time.sleep(min(1.0, 0.2 * (2 ** attempt)))
 
         try:
             return json.loads(decoded)

@@ -57,6 +57,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $RuntimeState "benchmarks") | Out-Null
     $EvidenceFiles = @(
         @("benchmarks\latest.json", "benchmarks\latest.json"),
+        @("registry.json", "registry.json"),
         @("model-overrides.json", "model-overrides.json"),
         @("outcomes.jsonl", "outcomes.jsonl")
     )

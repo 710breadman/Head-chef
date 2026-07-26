@@ -2,8 +2,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+import io
+from unittest.mock import patch
 
-from head_chef.cli import build_parser
+from head_chef.cli import _existing_plan_files, build_parser, cmd_work
+from head_chef.storage import ensure_state
 from head_chef.models import ModelProfile
 from head_chef.ollama import OllamaResponse
 from head_chef.orchestration import (
@@ -139,6 +143,43 @@ class SprintOrchestrationTests(unittest.TestCase):
         args = build_parser().parse_args(["orchestrate", "--project", "C:/project"])
         self.assertEqual(args.command, "orchestrate")
         self.assertFalse(args.no_local_analysis)
+
+    def test_work_dispatches_ready_task_to_preassigned_local_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir()
+            (root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+            state = ensure_state(root)
+            plan_path = state / "orchestration" / "sprint-plan.json"
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(json.dumps({"tasks": [{
+                "id": "T-1", "title": "Implement", "objective": "Change code",
+                "actionable": True, "dependencies": [], "evidence": [],
+                "acceptance_criteria": ["works"],
+                "expected_files": ["src/a.py", "../outside", "src"],
+                "primary_assignment": {"station": "coding", "model": "coder"},
+            }]}), encoding="utf-8")
+            args = build_parser().parse_args(["work", "--project", str(root)])
+            output = io.StringIO()
+            with patch("head_chef.cli._captured_command", return_value=(0, {"status": "completed"})) as captured, \
+                 redirect_stdout(output):
+                code = cmd_work(args)
+            cook_args = captured.call_args.args[1]
+            payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(cook_args.model, "coder")
+        self.assertEqual(cook_args.allowed_file, ["src/a.py"])
+        self.assertEqual(payload["task_count"], 1)
+
+    def test_plan_files_reject_escape_and_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "ok.txt").write_text("ok", encoding="utf-8")
+            (root / "folder").mkdir()
+            self.assertEqual(
+                _existing_plan_files(root, ["ok.txt", "../escape", "folder", "C:/absolute"]),
+                ["ok.txt"],
+            )
 
 
 if __name__ == "__main__":

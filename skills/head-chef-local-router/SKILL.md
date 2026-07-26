@@ -23,7 +23,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 & $HeadChef orchestrate --project "C:\Projects\App"
 ```
 
-2. Always run `refresh`, then make `orchestrate` the first project task. Refresh must reconcile installed names/digests, apply owner overrides, exclude cloud models, and rebuild `.head-chef/kitchen.json`. New or changed models do not inherit stale benchmark evidence.
+2. Always run `refresh`, then make `orchestrate` the first project task. Refresh uses machine-global digest history, strength-tests new/changed local models only in advertised capabilities, applies owner overrides, excludes cloud models, and rebuilds `.head-chef/kitchen.json`. Vision strength waits for an explicit safe fixture. New digests never inherit stale evidence.
 3. `orchestrate` must:
    - discover an existing JSON sprint manifest and referenced task contracts;
    - hash sprint sources;
@@ -32,7 +32,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
    - ask the local planning station to analyze every phase;
    - save `.head-chef/orchestration/sprint-plan.json`.
 4. If no sprint contract exists, report that fact, run `& $HeadChef kitchen`, and continue with a user-defined bounded task. Never invent a sprint file without permission.
-4. Read only the saved plan entries for the actionable sprint and their local phase notes. Treat local notes as advisory, not project truth. Respect the project's dependency order and one-sprint rules. Never dispatch every sprint at once.
+5. Read only the saved plan entries for the actionable sprint and their local phase notes. Treat local notes as advisory, not project truth. Respect dependency order. Run `& $HeadChef work --project "C:\Projects\App"` to dispatch the first ready task locally. Use `--all-ready` only when tasks are independently actionable.
 5. Give the primary station most implementation work. Use supporting stations when useful: planning for decomposition, retrieval for supplied-source lookup, writing for prose, vision for actual captures, and analysis for an independent review.
 6. Prefer quality over speed. Do not use `--prefer-speed`. Codex should mainly enforce rules, package context, tune parameters, review evidence, run authoritative tests, and apply or reject changes.
 7. Stop and tell the user to run `scripts\Install-CodexSkill.ps1` from the Head Chef repository if the launcher reports that installation is missing.
@@ -54,7 +54,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 ```
 
 11. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
-12. If output status is `split`, dispatch independent child jobs first. Dispatch synthesis only after every dependency has usable reviewed output.
+12. `cook` automatically dispatches split child jobs, then creates a new synthesis job containing their immutable schema-validated evidence. Use `--no-auto-split` only when Codex must manually gate child order.
 13. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
 14. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `& $HeadChef review`.
 15. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.
@@ -78,3 +78,4 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 - Run and benchmark attempts are immutable; review verdicts are separate artifacts.
 - `cook` retries recoverable execution/schema failures as new immutable attempts and journals recovery.
 - Sprint plans are refreshable derived state. Source hashes show when the project sprint contract changed.
+- `work` packages only existing regular files named by the plan and sends ready tasks to their preassigned local station.

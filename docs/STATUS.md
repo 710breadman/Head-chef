@@ -32,11 +32,19 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - First-use sprint orchestration: contract discovery, source hashing, task-detail merge, dependency/actionability map, primary/supporting stations, and local phase analysis.
 - Live registry reconciliation (`refresh`) with new/updated/removed digest reporting and saved kitchen state.
 - Adaptive per-task context/output limits passed to Ollama, plus immutable `cook` retry attempts and recovery journal.
+- Machine-global model digest inventory; new/changed models automatically run advertised-strength evaluations.
+- Automatic split-child dispatch and evidence-fed local synthesis, with manual opt-out.
+- Dependency-ready sprint execution through `work`/`run-plan`, using safe plan-file packaging and preassigned models.
+- Transient Ollama transport retry plus schema-failure specialist fallback.
+- Automatic independent local analysis review of dependency-ready sprint work.
+- Hard station-admission rejection for current-digest failed strength evaluations.
 
 ## Validation completed in the isolated build environment
 
-- 61 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 69 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Live refresh on this host reconciled 12 installed entries, excluded the cloud tag, and rebuilt all seven local stations.
+- Live 4K forced split dispatched two children; one schema failure rerouted from Gemma e4b to Gemma 26B; synthesis then passed.
+- Live `work` on TBWL-011 used Qwen Coder, saved target-local evidence, and ran Gemma e4b as independent reviewer.
 - Installer and test script passed on current Windows host with Python 3.11; initial BOM defect in `.pth` creation was found and fixed.
 - Ollama 0.32.3 doctor passed on loopback and discovered 12 installed models.
 - One real Qwen embedding dispatch passed through `/api/embed`.

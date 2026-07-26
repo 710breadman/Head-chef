@@ -3,17 +3,18 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from urllib import error as url_error
 
 from head_chef.context_packager import package_context, render_package, split_context
 from head_chef.config import Settings, resolve_state_dir, write_default_config
 from head_chef.contracts import WORKER_OUTPUT_SCHEMA
 from head_chef.executors import execute_job
-from head_chef.jobs import JobCard
+from head_chef.jobs import JobCard, load_job_card, save_job_card
 from head_chef.models import ModelProfile
 from head_chef.models import infer_capabilities
 from head_chef.ollama import OllamaClient, OllamaResponse
 from head_chef.registry import apply_overrides, reconcile_registry
-from head_chef.cli import _append_outcome, _captured_command, _evidence_path, _json, _public_job, _public_run, build_parser
+from head_chef.cli import _append_outcome, _captured_command, _cook_split_jobs, _evidence_path, _json, _public_job, _public_run, _safe_project_text, build_parser, cmd_cook
 from head_chef.kitchen import build_kitchen
 from head_chef.benchmark import _chat_score, benchmark_model, run_benchmarks
 from contextlib import redirect_stdout
@@ -57,6 +58,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result.executor, "analysis")
         self.assertEqual(client.calls[0][0], "chat")
         self.assertEqual(client.calls[0][3]["format_schema"], WORKER_OUTPUT_SCHEMA)
+        self.assertIs(client.calls[0][3]["think"], False)
 
     def test_chat_executor_applies_per_task_limits(self):
         client = FakeClient()
@@ -89,6 +91,22 @@ class ExecutorTests(unittest.TestCase):
         client.chat("m", [{"role": "user", "content": "x"}], think=False)
         self.assertIs(client.payload["think"], False)
 
+    def test_ollama_transient_connection_failure_retries(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"version":"ok"}'
+
+        client = OllamaClient("http://127.0.0.1:11434", request_retries=1)
+        with patch("head_chef.ollama.request.urlopen", side_effect=[url_error.URLError("restart"), Response()]), \
+             patch("head_chef.ollama.time.sleep"):
+            self.assertEqual(client.version(), "ok")
+
 
 class PolicyTests(unittest.TestCase):
     def test_manual_coding_override_never_bypasses_review(self):
@@ -115,6 +133,16 @@ class PolicyTests(unittest.TestCase):
 
 
 class ContextTests(unittest.TestCase):
+    def test_explicit_context_file_stays_inside_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "ok.txt").write_text("ok", encoding="utf-8")
+            self.assertEqual(_safe_project_text(root, "ok.txt"), "ok")
+            with self.assertRaisesRegex(ValueError, "project-relative"):
+                _safe_project_text(root, str((root / "ok.txt").resolve()))
+            with self.assertRaisesRegex(ValueError, "project-relative"):
+                _safe_project_text(root, "../outside.txt")
+
     def test_manifest_hash_and_deduplication(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -360,10 +388,84 @@ class ContractTests(unittest.TestCase):
             "--context-tokens", "16384", "--output-tokens", "4096", "--max-attempts", "3",
         ])
         self.assertEqual((args.context_tokens, args.output_tokens, args.max_attempts), (16384, 4096, 3))
+        self.assertFalse(args.no_auto_split)
 
     def test_refresh_command_is_available(self):
         args = build_parser().parse_args(["refresh"])
         self.assertEqual(args.command, "refresh")
+        self.assertFalse(args.no_evaluate)
+
+    def test_cook_retries_then_creates_capability_checked_fallback_job(self):
+        args = build_parser().parse_args([
+            "cook", "--project", ".", "--task", "Analyze", "--max-attempts", "3",
+        ])
+        first = {
+            "job": {"id": "j1", "selected_model": "primary", "fallback_models": ["fallback"]},
+            "path": "j1.json", "child_job_paths": [],
+        }
+        second = {
+            "job": {"id": "j2", "selected_model": "fallback", "fallback_models": []},
+            "path": "j2.json", "child_job_paths": [],
+        }
+        calls = [
+            (0, first),
+            (1, None),
+            (4, {"verification": {"status": "needs_revision"}}),
+            (0, second),
+            (0, {"verification": {"status": "accepted"}}),
+        ]
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("head_chef.cli._captured_command", side_effect=calls) as captured, \
+             patch("head_chef.cli.load_settings", return_value=(Settings(), Path(temp))), \
+             patch("head_chef.cli.append_jsonl") as journal, \
+             redirect_stdout(output):
+            code = cmd_cook(args)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["job"]["id"], "j2")
+        self.assertEqual(payload["recovery"][1]["next_model"], "fallback")
+        self.assertEqual(captured.call_count, 5)
+        journal.assert_called_once()
+
+    def test_split_cook_dispatches_children_then_evidence_fed_synthesis(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = ensure_state(root)
+            child = JobCard("child", str(root), "part", selected_model="m", model_digest="d")
+            synthesis = JobCard(
+                "synth", str(root), "synthesize", selected_model="m", model_digest="d",
+                context_limit_tokens=8192, output_limit_tokens=512, dependencies=["child"],
+            )
+            child_path = save_job_card(child, state / "jobs")
+            synthesis_path = save_job_card(synthesis, state / "jobs")
+            args = build_parser().parse_args(["cook", "--project", str(root), "--task", "task"])
+            child_result = {
+                "run_path": "run.json",
+                "run": {"response": VALID_RESULT},
+                "verification": {"status": "accepted"},
+            }
+            synthesis_result = {
+                "run_path": "synthesis-run.json",
+                "run": {"response": VALID_RESULT},
+                "verification": {"status": "accepted"},
+            }
+            output = io.StringIO()
+            with patch("head_chef.cli.load_settings", return_value=(Settings(), root)), \
+                 patch("head_chef.cli._dispatch_saved_job", side_effect=[
+                     (0, child_result, [{"attempt": 1, "exit_code": 0}]),
+                     (0, synthesis_result, [{"attempt": 1, "exit_code": 0}]),
+                 ]), redirect_stdout(output):
+                code = _cook_split_jobs(
+                    args,
+                    {"job": {"id": "parent", "project": str(root)}},
+                    [str(child_path), str(synthesis_path)],
+                )
+            payload = json.loads(output.getvalue())
+            ready = load_job_card(Path(payload["synthesis_job_path"]))
+        self.assertEqual(code, 0)
+        self.assertIn('"job_id": "child"', ready.context_text)
+        self.assertNotEqual(ready.id, "synth")
 
     def test_command_capture_keeps_json_contract_parseable(self):
         def command(_):
@@ -433,6 +535,28 @@ class ContractTests(unittest.TestCase):
             decision = route(RouteRequest("analyze", required_capability="analysis"), models, benchmark_path=path)
         a_reasons = next(item.reasons for item in decision.candidates if item.model == "a")
         self.assertFalse(any("strength" in reason for reason in a_reasons))
+
+    def test_current_digest_failed_strength_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bench.json"
+            path.write_text(json.dumps({
+                "benchmark": "suite",
+                "results": [{
+                    "model": "bad", "model_digest": "d1", "category": "analysis",
+                    "score": 0, "ok": False, "suite_version": "suite",
+                }],
+            }), encoding="utf-8")
+            decision = route(
+                RouteRequest("analyze", required_capability="analysis"),
+                [
+                    ModelProfile("bad", digest="d1", capabilities={"analysis"}),
+                    ModelProfile("good", digest="d2", capabilities={"analysis"}),
+                ],
+                benchmark_path=path,
+            )
+        self.assertEqual(decision.selected_model, "good")
+        failed = next(candidate for candidate in decision.candidates if candidate.model == "bad")
+        self.assertTrue(failed.rejected)
 
     def test_equal_strength_prefers_materially_faster_model(self):
         with tempfile.TemporaryDirectory() as temp:

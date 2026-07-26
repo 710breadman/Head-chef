@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import secrets
 import sys
 import time
 from typing import Any
@@ -18,7 +19,7 @@ from .jobs import create_job_card, load_job_card, render_worker_prompt, save_job
 from .models import ModelProfile, profile_from_ollama
 from .ollama import OllamaClient, OllamaError
 from .router import RouteRequest, route
-from .storage import append_jsonl, atomic_write_json, ensure_state, utc_now
+from .storage import append_jsonl, atomic_write_json, compact_timestamp, ensure_state, utc_now
 from .contracts import CONTRACT_VERSION
 from .executors import execute_job
 from .verification import parse_worker_output, verify_output, validate_review_status
@@ -52,7 +53,7 @@ def _public_job(job) -> dict[str, Any]:
 
 
 def _client(settings: Settings) -> OllamaClient:
-    return OllamaClient(settings.ollama_url, settings.request_timeout_seconds)
+    return OllamaClient(settings.ollama_url, settings.request_timeout_seconds, settings.request_retries)
 
 
 def _profiles(client: OllamaClient, settings: Settings) -> list[ModelProfile]:
@@ -172,20 +173,31 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
-def _context_text(args: argparse.Namespace) -> str:
+def _safe_project_text(project: Path, value: str) -> str:
+    raw = Path(value)
+    if raw.is_absolute() or ".." in raw.parts or ":" in value:
+        raise ValueError("Context file must be project-relative")
+    path = (project.resolve() / raw).resolve()
+    try:
+        path.relative_to(project.resolve())
+    except ValueError as exc:
+        raise ValueError("Context file escapes project root") from exc
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Cannot read context file {path}: {exc}") from exc
+
+
+def _context_text(args: argparse.Namespace, project: Path | None = None) -> str:
     pieces = [getattr(args, "task", "")]
     path_value = getattr(args, "context_file", None)
     if path_value:
-        path = Path(path_value)
-        try:
-            pieces.append(path.read_text(encoding="utf-8"))
-        except OSError as exc:
-            raise ValueError(f"Cannot read context file {path}: {exc}") from exc
+        pieces.append(_safe_project_text(project or Path.cwd(), path_value))
     return "\n\n".join(piece for piece in pieces if piece)
 
 
 def _decision(args: argparse.Namespace, profiles: list[ModelProfile], settings: Settings, root: Path):
-    context = _context_text(args)
+    context = _context_text(args, root)
     benchmark_path = _evidence_path(root, settings, "benchmarks/latest.json")
     return route(
         RouteRequest(
@@ -233,7 +245,8 @@ def cmd_budget(args: argparse.Namespace) -> int:
 
 
 def cmd_job(args: argparse.Namespace) -> int:
-    settings, root = load_settings()
+    project = Path(args.project).resolve()
+    settings, root = load_settings(project)
     state = ensure_state(root, settings.state_dir)
     try:
         profiles = _profiles(_client(settings), settings)
@@ -245,9 +258,9 @@ def cmd_job(args: argparse.Namespace) -> int:
     context_text = ""
     if args.context_file:
         try:
-            context_text = Path(args.context_file).read_text(encoding="utf-8")
-        except OSError as exc:
-            print(f"Cannot read context file {args.context_file}: {exc}", file=sys.stderr)
+            context_text = _safe_project_text(project, args.context_file)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
             return 1
     if args.allowed_file:
         try:
@@ -272,7 +285,7 @@ def cmd_job(args: argparse.Namespace) -> int:
         )
 
     job = create_job_card(
-        project=args.project,
+        project=str(project),
         task=args.task,
         decision=decision,
         allowed_files=args.allowed_file,
@@ -311,11 +324,22 @@ def cmd_job(args: argparse.Namespace) -> int:
         estimated = decision.budget.estimated_input_tokens if decision.budget else 0
         minimum = estimated + (requested_output or settings.reserved_output_tokens) + settings.safety_margin_tokens
         if requested_context and requested_context < minimum:
-            print(
-                f"Requested context {requested_context} is below safe task need {minimum}; package less context or allow splitting.",
-                file=sys.stderr,
+            override_budget = evaluate_budget(
+                context_text or args.task,
+                requested_context,
+                requested_output or settings.reserved_output_tokens,
+                settings.safety_margin_tokens,
             )
-            return 2
+            if args.allowed_file and override_budget.status == "split":
+                decision.budget = override_budget
+                decision.requires_split = True
+                job.requires_split = True
+            else:
+                print(
+                    f"Requested context {requested_context} is below safe task need {minimum}; package files to allow splitting.",
+                    file=sys.stderr,
+                )
+                return 2
         job.context_limit_tokens = requested_context or min(
             selected_profile.context_tokens,
             max(settings.default_context_tokens, minimum),
@@ -339,7 +363,7 @@ def cmd_job(args: argparse.Namespace) -> int:
         child_ids: list[str] = []
         for index, chunk in enumerate(chunks, 1):
             child = create_job_card(
-                project=args.project,
+                project=str(project),
                 task=f"{args.task} [context part {index}/{len(chunks)}]",
                 decision=decision,
                 allowed_files=[item.path for item in chunk],
@@ -353,10 +377,15 @@ def cmd_job(args: argparse.Namespace) -> int:
             child.parent_job_id = job.id
             child.model_digest = job.model_digest
             child.requires_split = False
+            child.task_profile = dict(job.task_profile)
+            child.context_limit_tokens = job.context_limit_tokens
+            child.output_limit_tokens = job.output_limit_tokens
+            child.max_attempts = job.max_attempts
+            child.fallback_models = list(job.fallback_models)
             child_ids.append(child.id)
             child_paths.append(str(save_job_card(child, state / "jobs")))
         synthesis = create_job_card(
-            project=args.project,
+            project=str(project),
             task=f"Synthesize child results for: {args.task}",
             decision=decision,
             acceptance_criteria=args.acceptance,
@@ -366,15 +395,28 @@ def cmd_job(args: argparse.Namespace) -> int:
         synthesis.model_digest = job.model_digest
         synthesis.dependencies = child_ids
         synthesis.requires_split = False
+        synthesis.task_profile = dict(job.task_profile)
+        synthesis.context_limit_tokens = job.context_limit_tokens
+        synthesis.output_limit_tokens = job.output_limit_tokens
+        synthesis.max_attempts = job.max_attempts
+        synthesis.fallback_models = list(job.fallback_models)
         child_paths.append(str(save_job_card(synthesis, state / "jobs")))
     _json({"job": _public_job(job), "path": str(path), "child_job_paths": child_paths})
     return 0 if job.selected_model else 2
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
-    settings, root = load_settings()
-    state = ensure_state(root, settings.state_dir)
     path = Path(args.job).resolve()
+    try:
+        raw_job = json.loads(path.read_text(encoding="utf-8"))
+        project_value = raw_job.get("project")
+        if not isinstance(project_value, str) or not project_value:
+            raise ValueError("Job card has no project root")
+        settings, root = load_settings(Path(project_value))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"Cannot resolve job project: {exc}", file=sys.stderr)
+        return 1
+    state = ensure_state(root, settings.state_dir)
     jobs_root = (state / "jobs").resolve()
     try:
         path.relative_to(jobs_root)
@@ -514,20 +556,59 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     settings, root = load_settings()
     state = ensure_state(root, settings.state_dir)
     try:
-        profiles = _profiles(_client(settings), settings)
-        overrides = load_overrides(state / "model-overrides.json")
+        client = _client(settings)
+        profiles = _profiles(client, settings)
+        overrides = load_overrides(_evidence_path(root, settings, "model-overrides.json"))
         profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
-        changes = reconcile_registry(state / "registry.json", profiles)
+        global_registry = _global_evidence_path("registry.json")
+        registry_path = global_registry or (state / "registry.json")
+        changes = reconcile_registry(registry_path, profiles)
+        if registry_path != state / "registry.json":
+            save_registry(state / "registry.json", profiles)
+
+        changed_names = set(changes["new"] + changes["updated"])
+        changed_profiles = [
+            profile for profile in profiles
+            if profile.name in changed_names and not profile.is_cloud
+        ]
+        evaluation: dict[str, Any] | None = None
+        skipped_strengths: list[dict[str, str]] = []
+        benchmark_path = _global_evidence_path("benchmarks/latest.json") or state / "benchmarks" / "latest.json"
+        if changed_profiles and not args.no_evaluate:
+            assignments: dict[str, set[str]] = {}
+            for profile in changed_profiles:
+                strengths = set(profile.capabilities)
+                if "vision" in strengths and not args.image:
+                    strengths.remove("vision")
+                    skipped_strengths.append({"model": profile.name, "category": "vision", "reason": "--image required"})
+                assignments[profile.name] = strengths
+            evaluation = run_benchmarks(
+                client,
+                changed_profiles,
+                benchmark_path,
+                args.timeout or settings.request_timeout_seconds,
+                categories=set(STRENGTH_CASES),
+                vision_image=Path(args.image).resolve() if args.image else None,
+                assignments=assignments,
+            )
         kitchen = build_kitchen(
             [profile for profile in profiles if not profile.is_cloud],
-            benchmark_path=_evidence_path(root, settings, "benchmarks/latest.json"),
+            benchmark_path=benchmark_path,
             outcome_path=_evidence_path(root, settings, "outcomes.jsonl"),
         )
         atomic_write_json(state / "kitchen.json", kitchen)
     except (OllamaError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    _json({"status": "refreshed", "model_count": len(profiles), "changes": changes, "kitchen": kitchen})
+    _json({
+        "status": "refreshed",
+        "model_count": len(profiles),
+        "changes": changes,
+        "evaluated_result_count": evaluation.get("current_result_count", 0) if evaluation else 0,
+        "evaluation_artifact": evaluation.get("artifact_path") if evaluation else None,
+        "skipped_strengths": skipped_strengths,
+        "kitchen": kitchen,
+    })
     return 0
 
 
@@ -647,6 +728,222 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _existing_plan_files(project: Path, values: list[Any]) -> list[str]:
+    files: list[str] = []
+    root = project.resolve()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts or ":" in value:
+            continue
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            files.append(candidate.relative_to(root).as_posix())
+    return files
+
+
+def cmd_work(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, _ = load_settings(project)
+    state = ensure_state(project, settings.state_dir)
+    plan_path = state / "orchestration" / "sprint-plan.json"
+    if not plan_path.exists():
+        print("No sprint plan. Run head-chef orchestrate first.", file=sys.stderr)
+        return 2
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        tasks = plan.get("tasks", [])
+        if not isinstance(tasks, list):
+            raise ValueError("sprint plan tasks must be an array")
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"Invalid sprint plan: {exc}", file=sys.stderr)
+        return 2
+
+    requested = set(args.task_id or [])
+    selected = [
+        task for task in tasks
+        if isinstance(task, dict)
+        and task.get("actionable") is True
+        and (not requested or task.get("id") in requested)
+    ]
+    if requested:
+        missing = requested - {str(task.get("id")) for task in selected}
+        if missing:
+            print(f"Tasks are missing or not dependency-ready: {', '.join(sorted(missing))}", file=sys.stderr)
+            return 2
+    if not selected:
+        print("No dependency-ready sprint tasks.", file=sys.stderr)
+        return 2
+    if not args.all_ready and not requested:
+        selected = selected[:1]
+
+    results: list[dict[str, Any]] = []
+    final_code = 0
+    for task in selected:
+        assignment = task.get("primary_assignment", {})
+        category = assignment.get("station")
+        model = assignment.get("model")
+        if category not in STRENGTH_CASES or not isinstance(model, str) or not model:
+            results.append({"task_id": task.get("id"), "status": "unassigned"})
+            final_code = max(final_code, 2)
+            continue
+        task_text = (
+            f"Sprint {task.get('id')}: {task.get('title')}\n"
+            f"Objective: {task.get('objective')}\n"
+            "Produce the maximum useful bounded local-worker result. Do not claim commands ran."
+        )
+        cook_args = argparse.Namespace(
+            project=str(project),
+            task=task_text,
+            context_file=None,
+            category=category,
+            model=model,
+            prefer_speed=False,
+            allowed_file=_existing_plan_files(project, list(task.get("expected_files") or [])),
+            forbidden_file=[],
+            acceptance=list(task.get("acceptance_criteria") or []),
+            test=[],
+            context_note=[
+                f"Dependencies: {', '.join(task.get('dependencies') or []) or 'none'}",
+                f"Prior evidence: {'; '.join(task.get('evidence') or []) or 'none'}",
+            ],
+            exclude=["No unrelated sprint work", "Do not execute commands or modify files"],
+            image=[],
+            complexity=args.complexity,
+            risk=args.risk,
+            context_tokens=args.context_tokens,
+            output_tokens=args.output_tokens,
+            max_attempts=args.max_attempts,
+            timeout=args.timeout,
+            temperature=args.temperature,
+            no_auto_split=False,
+        )
+        code, payload = _captured_command(cmd_cook, cook_args)
+        item_result = {
+            "task_id": task.get("id"),
+            "model": model,
+            "category": category,
+            "allowed_files": cook_args.allowed_file,
+            "exit_code": code,
+            "result": payload,
+        }
+        reviewer = next(
+            (
+                assignment for assignment in task.get("supporting_assignments", [])
+                if isinstance(assignment, dict)
+                and assignment.get("station") == "analysis"
+                and assignment.get("model")
+            ),
+            None,
+        )
+        if code == 0 and payload and reviewer:
+            review_code, review_payload = _local_support_review(
+                project, settings, state, task, payload, str(reviewer["model"]), args,
+            )
+            item_result["support_review"] = review_payload
+            item_result["support_review_exit_code"] = review_code
+            final_code = max(final_code, review_code)
+        results.append(item_result)
+        final_code = max(final_code, code)
+    artifact = state / "orchestration" / "work-runs" / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
+    atomic_write_json(artifact, {
+        "contract_version": CONTRACT_VERSION,
+        "schema_version": "1.0",
+        "created_at": utc_now(),
+        "plan_path": str(plan_path),
+        "results": results,
+    })
+    _json({
+        "status": "completed" if final_code == 0 else "attention_required",
+        "artifact": str(artifact),
+        "task_count": len(results),
+        "results": results,
+    })
+    return final_code
+
+
+def _local_support_review(
+    project: Path,
+    settings: Settings,
+    state: Path,
+    task: dict[str, Any],
+    primary_payload: dict[str, Any],
+    reviewer_model: str,
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any] | None]:
+    primary_run = primary_payload.get("run")
+    if not isinstance(primary_run, dict):
+        synthesis = primary_payload.get("synthesis")
+        primary_run = synthesis.get("run") if isinstance(synthesis, dict) else None
+    if not isinstance(primary_run, dict):
+        return 2, {"status": "skipped", "reason": "primary run evidence unavailable"}
+    context = json.dumps({
+        "task_id": task.get("id"),
+        "objective": task.get("objective"),
+        "acceptance_criteria": task.get("acceptance_criteria", []),
+        "primary_run": primary_run,
+    }, ensure_ascii=True)
+    try:
+        client = _client(settings)
+        profiles = _profiles(client, settings)
+        decision = route(
+            RouteRequest(
+                task=f"Independently review local result for sprint {task.get('id')}",
+                context_text=context,
+                required_capability="analysis",
+                manual_model=reviewer_model,
+                prefer_quality=True,
+            ),
+            profiles,
+            reserved_output_tokens=args.output_tokens or settings.reserved_output_tokens,
+            safety_margin_tokens=settings.safety_margin_tokens,
+            benchmark_path=_evidence_path(project, settings, "benchmarks/latest.json"),
+            outcome_path=_evidence_path(project, settings, "outcomes.jsonl"),
+        )
+        if not decision.selected_model:
+            return 2, {"status": "skipped", "reason": decision.explanation}
+        review_job = create_job_card(
+            project=str(project),
+            task=(
+                f"Independently review the supplied primary local-worker result for {task.get('id')}. "
+                "Re-check every original acceptance criterion. Find unsupported claims, missed requirements, "
+                "unsafe suggestions, and concrete improvements. Explicitly state when no unsupported claims exist."
+            ),
+            decision=decision,
+            acceptance_criteria=list(task.get("acceptance_criteria") or []),
+            context_text=context,
+            exclusions=["Do not invent project evidence", "Do not approve your own output"],
+        )
+        profile = next(profile for profile in profiles if profile.name == decision.selected_model)
+        review_job.model_digest = profile.digest
+        review_job.context_limit_tokens = min(
+            args.context_tokens or profile.context_tokens,
+            profile.context_tokens,
+        )
+        review_job.output_limit_tokens = args.output_tokens or settings.reserved_output_tokens
+        review_job.max_attempts = args.max_attempts
+        review_job.fallback_models = [
+            candidate.model
+            for candidate in decision.candidates
+            if not candidate.rejected and candidate.model != decision.selected_model
+        ][:2]
+        review_path = save_job_card(review_job, state / "jobs")
+        code, payload, attempts = _dispatch_saved_job(str(review_path), args)
+        return code, {
+            "status": "completed" if code == 0 else "failed",
+            "job_path": str(review_path),
+            "attempts": attempts,
+            "result": payload,
+        }
+    except (OllamaError, OSError, ValueError) as exc:
+        return 1, {"status": "failed", "error": str(exc)}
+
+
 def _captured_command(function, args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     output = io.StringIO()
     with redirect_stdout(output):
@@ -663,6 +960,8 @@ def cmd_cook(args: argparse.Namespace) -> int:
         return job_code
     child_paths = job_result.get("child_job_paths", [])
     if child_paths:
+        if not args.no_auto_split:
+            return _cook_split_jobs(args, job_result, child_paths)
         _json({
             "status": "split",
             "stage": "job",
@@ -692,7 +991,7 @@ def cmd_cook(args: argparse.Namespace) -> int:
         })
         if dispatch_code == 0:
             break
-        if attempt_number > 1 and fallback_models:
+        if (dispatch_result is not None or attempt_number > 1) and fallback_models:
             fallback = fallback_models.pop(0)
             recovery_args = argparse.Namespace(**{**vars(args), "model": fallback})
             recovery_job_code, recovery_job = _captured_command(cmd_job, recovery_args)
@@ -703,7 +1002,7 @@ def cmd_cook(args: argparse.Namespace) -> int:
             else:
                 recovery[-1]["fallback_rejected"] = fallback
     if len(recovery) > 1:
-        settings, root = load_settings()
+        settings, root = load_settings(Path(args.project))
         append_jsonl(root / settings.state_dir / "recovery.jsonl", {
             "created_at": utc_now(),
             "job_id": job_result["job"]["id"],
@@ -725,6 +1024,126 @@ def cmd_cook(args: argparse.Namespace) -> int:
             "recovery": recovery,
         })
     return dispatch_code
+
+
+def _dispatch_saved_job(path: str, args: argparse.Namespace) -> tuple[int, dict[str, Any] | None, list[dict[str, Any]]]:
+    result: dict[str, Any] | None = None
+    code = 1
+    attempts: list[dict[str, Any]] = []
+    current_path = Path(path)
+    current_job = load_job_card(current_path)
+    fallback_models = list(current_job.fallback_models)
+    dispatch_args = argparse.Namespace(job=str(current_path), timeout=args.timeout, temperature=args.temperature)
+    for number in range(1, max(1, args.max_attempts) + 1):
+        code, result = _captured_command(cmd_dispatch, dispatch_args)
+        attempts.append({
+            "attempt": number,
+            "job_id": current_job.id,
+            "model": current_job.selected_model,
+            "exit_code": code,
+        })
+        if code == 0:
+            break
+        if result is not None and fallback_models and number < args.max_attempts:
+            settings, _ = load_settings(Path(current_job.project))
+            profiles = _profiles(_client(settings), settings)
+            fallback = next(
+                (
+                    profile for name in fallback_models
+                    for profile in profiles
+                    if profile.name == name
+                    and not profile.is_cloud
+                    and current_job.category in profile.capabilities
+                    and not (profile.is_embedding_only and current_job.category != "embedding")
+                ),
+                None,
+            )
+            if fallback:
+                recovered = load_job_card(current_path)
+                recovered.id = f"{recovered.id}-fallback-{secrets.token_hex(4)}"
+                recovered.selected_model = fallback.name
+                recovered.model_digest = fallback.digest
+                recovered.context_limit_tokens = min(
+                    recovered.context_limit_tokens or fallback.context_tokens,
+                    fallback.context_tokens,
+                )
+                recovered.fallback_models = [name for name in fallback_models if name != fallback.name]
+                current_path = save_job_card(recovered, current_path.parent)
+                current_job = recovered
+                dispatch_args.job = str(current_path)
+                fallback_models = list(recovered.fallback_models)
+                attempts[-1]["next_model"] = fallback.name
+    return code, result, attempts
+
+
+def _cook_split_jobs(args: argparse.Namespace, parent: dict[str, Any], child_paths: list[str]) -> int:
+    settings, root = load_settings(Path(parent["job"]["project"]))
+    state = ensure_state(root, settings.state_dir)
+    child_evidence: list[dict[str, Any]] = []
+    child_runs: list[dict[str, Any]] = []
+    for child_path in child_paths[:-1]:
+        child = load_job_card(Path(child_path))
+        code, result, attempts = _dispatch_saved_job(child_path, args)
+        child_runs.append({
+            "job_id": child.id,
+            "model": child.selected_model,
+            "exit_code": code,
+            "attempts": attempts,
+            "run_path": result.get("run_path") if result else None,
+        })
+        if code != 0 or not result:
+            _json({
+                "status": "child_failed",
+                "stage": "split_dispatch",
+                "job": parent["job"],
+                "child_runs": child_runs,
+                "next_action": "Inspect immutable child attempts; rerun cook after correcting local runtime/model issue.",
+            })
+            return code or 1
+        child_evidence.append({
+            "job_id": child.id,
+            "model": child.selected_model,
+            "response": result["run"]["response"],
+            "verification": result["verification"],
+        })
+
+    placeholder = load_job_card(Path(child_paths[-1]))
+    synthesis_context = json.dumps(
+        {"source": "immutable schema-validated local-worker attempts", "children": child_evidence},
+        ensure_ascii=True,
+    )
+    context_limit = placeholder.context_limit_tokens or settings.default_context_tokens
+    synthesis_budget = evaluate_budget(
+        synthesis_context,
+        context_limit,
+        placeholder.output_limit_tokens or settings.reserved_output_tokens,
+        settings.safety_margin_tokens,
+    )
+    if synthesis_budget.status == "split":
+        _json({
+            "status": "synthesis_oversized",
+            "stage": "split_synthesis",
+            "job": parent["job"],
+            "child_runs": child_runs,
+            "budget": synthesis_budget.to_dict(),
+            "next_action": "Reduce child scope or raise task context within selected model metadata.",
+        })
+        return 3
+    placeholder.id = f"{placeholder.id}-ready-{secrets.token_hex(4)}"
+    placeholder.context_text = synthesis_context
+    placeholder.context_notes.append("Synthesize only the supplied immutable child run evidence.")
+    synthesis_path = save_job_card(placeholder, state / "jobs")
+    code, result, attempts = _dispatch_saved_job(str(synthesis_path), args)
+    _json({
+        "status": "completed" if code == 0 else "synthesis_failed",
+        "stage": "split_synthesis",
+        "job": parent["job"],
+        "child_runs": child_runs,
+        "synthesis_job_path": str(synthesis_path),
+        "synthesis_attempts": attempts,
+        "synthesis": result,
+    })
+    return code
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
@@ -824,6 +1243,9 @@ def build_parser() -> argparse.ArgumentParser:
     models.set_defaults(func=cmd_models)
 
     refresh = sub.add_parser("refresh", help="Reconcile installed Ollama models and rebuild kitchen.")
+    refresh.add_argument("--no-evaluate", action="store_true", help="Inventory only; do not strength-test new digests.")
+    refresh.add_argument("--image", help="Local fixture used when evaluating a new vision model.")
+    refresh.add_argument("--timeout", type=int)
     refresh.set_defaults(func=cmd_refresh)
 
     route_cmd = sub.add_parser("route", aliases=["plan"], help="Recommend an installed local model.")
@@ -848,6 +1270,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_job_arguments(cook)
     cook.add_argument("--timeout", type=int)
     cook.add_argument("--temperature", type=float, default=0.1)
+    cook.add_argument("--no-auto-split", action="store_true", help="Create child jobs without dispatching them.")
     cook.set_defaults(func=cmd_cook)
 
     dispatch = sub.add_parser("dispatch", help="Send one saved job card to its selected Ollama model.")
@@ -889,6 +1312,23 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--no-local-analysis", action="store_true")
     orchestrate.add_argument("--timeout", type=int)
     orchestrate.set_defaults(func=cmd_orchestrate)
+
+    work = sub.add_parser(
+        "work",
+        aliases=["run-plan"],
+        help="Dispatch dependency-ready sprint tasks to their assigned local stations.",
+    )
+    work.add_argument("--project", default=".")
+    work.add_argument("--task-id", action="append", default=[])
+    work.add_argument("--all-ready", action="store_true")
+    work.add_argument("--context-tokens", type=int)
+    work.add_argument("--output-tokens", type=int)
+    work.add_argument("--max-attempts", type=int, default=3)
+    work.add_argument("--timeout", type=int)
+    work.add_argument("--temperature", type=float, default=0.1)
+    work.add_argument("--complexity", choices=["low", "medium", "high"], default="high")
+    work.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    work.set_defaults(func=cmd_work)
 
     return parser
 

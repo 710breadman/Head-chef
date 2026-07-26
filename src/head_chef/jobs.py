@@ -113,6 +113,11 @@ def render_worker_prompt(job: JobCard) -> str:
     exclusions = "\n".join(f"- {item}" for item in job.exclusions) or "- No unrelated work"
     notes = "\n".join(f"- {item}" for item in job.context_notes) or "- None"
     supplied_context = job.context_text.strip() or "No additional text context supplied."
+    category_guidance = (
+        "- For coding work, put an exact unified diff or file-by-file replacement guidance in result and list every proposed path in changed_files."
+        if job.category == "coding"
+        else "- Put the complete bounded deliverable in result."
+    )
 
     return f"""You are a bounded local worker operating under Codex/OpenAI supervision.
 
@@ -147,6 +152,7 @@ TEST OR VERIFICATION COMMANDS
 OUTPUT
 - Return only one JSON object matching supplied schema.
 - Never wrap JSON in Markdown fences.
+{category_guidance}
 
 RULES
 - Do not silently change architecture, public interfaces, stored data, security policy, or dependencies.
@@ -157,5 +163,6 @@ RULES
 - Use blockers only for conditions that prevent completion; put ordinary uncertainty in risks.
 - Stay inside the exact task.
 - Return a concise proposed solution, patch guidance, analysis, or draft suitable for coordinator review.
-- End with: RISKS, VERIFICATION NEEDED, and BLOCKERS.
+- If acceptance requires commands you cannot run, inspect supplied context and return exact patch and verification guidance; never return only "pending".
+- Put risks, verification needs, and true blockers only in their matching JSON fields.
 """

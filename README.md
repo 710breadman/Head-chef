@@ -98,7 +98,7 @@ State and evidence are recorded
 |---|---|
 | `doctor` | Check Python-facing Ollama connectivity and local configuration. |
 | `models` | List installed models and inferred capabilities. |
-| `refresh` | Diff installed names/digests, apply overrides, and rebuild the local kitchen. |
+| `refresh` | Diff machine-global names/digests, strength-test new local models, and rebuild the kitchen. |
 | `route` / `plan` | Recommend a model and explain the decision. |
 | `budget` | Estimate context usage and split pressure. |
 | `job` / `delegate` | Package approved files and create bounded job card(s). |
@@ -109,6 +109,7 @@ State and evidence are recorded
 | `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
 | `cook` | Route, package, dispatch, validate, and record one bounded task. |
 | `orchestrate` / `sprint-plan` | Discover sprint files, analyze every phase locally, and save role assignments. |
+| `work` / `run-plan` | Dispatch dependency-ready sprint tasks to preassigned local stations. |
 
 ## Kitchen routing
 
@@ -126,7 +127,9 @@ Installed skills seed new projects with the machine's digest-matched strength ev
 
 On first use, the skill runs `refresh`, then `orchestrate`. Refresh detects new, changed, and removed Ollama models without downloading anything. Orchestration deterministically parses sprint contracts; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` preserves dependency order.
 
-`cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Every retry remains an immutable run; recovery summaries are journaled.
+`cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Lower limits drive safe file-boundary splitting. By default, child jobs run locally and a new synthesis job receives their immutable schema-validated evidence. Use `--no-auto-split` only for manual orchestration. Every retry remains immutable.
+
+After `orchestrate`, run `head-chef work --project "C:\Projects\App"` for the first dependency-ready task, or add `--all-ready` for every currently independent ready task. Head Chef packages only existing regular files named by the sprint contract. Local workers propose results; Codex still reviews and applies changes.
 
 Install optional Codex skill:
 
@@ -148,6 +151,7 @@ This installs a repository-independent private runtime, the skill, and a stable 
 - [`docs/SECURITY.md`](docs/SECURITY.md)
 - [`docs/TEST_MATRIX.md`](docs/TEST_MATRIX.md)
 - [`docs/STATUS.md`](docs/STATUS.md)
+- [`docs/COORDINATOR_AUDIT.md`](docs/COORDINATOR_AUDIT.md)
 
 ## Scope discipline
 

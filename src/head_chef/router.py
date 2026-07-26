@@ -111,6 +111,28 @@ def _load_benchmark_scores(path: Path | None, category: str) -> dict[tuple[str, 
     return scores
 
 
+def _load_benchmark_failures(path: Path | None, category: str) -> set[tuple[str, str]]:
+    if not path or not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    current_suite = data.get("benchmark")
+    return {
+        (item["model"], item["model_digest"])
+        for item in data.get("results", [])
+        if isinstance(item, dict)
+        and item.get("category") == category
+        and item.get("suite_version") == current_suite
+        and item.get("ok") is False
+        and item.get("skipped") is not True
+        and isinstance(item.get("model"), str)
+        and isinstance(item.get("model_digest"), str)
+        and item.get("model_digest")
+    }
+
+
 def _load_outcomes(path: Path | None, category: str) -> dict[tuple[str, str], tuple[float, float]]:
     if not path or not path.exists():
         return {}
@@ -155,6 +177,7 @@ def route(
     profiles = list(profiles)
     category = classify_task(request.task, request.required_capability)
     benchmark_scores = _load_benchmark_scores(benchmark_path, category)
+    benchmark_failures = _load_benchmark_failures(benchmark_path, category)
     outcomes = _load_outcomes(outcome_path, category)
 
     if request.manual_model:
@@ -218,6 +241,13 @@ def route(
         reasons: list[str] = []
         score = 0.0
         benchmark_evidence = benchmark_scores.get((profile.name, profile.digest))
+        if (profile.name, profile.digest) in benchmark_failures:
+            candidates.append(CandidateScore(
+                profile.name, -100.0,
+                [f"failed current {category} strength evaluation"],
+                True,
+            ))
+            continue
         if profile.is_cloud and not request.allow_cloud:
             candidates.append(CandidateScore(profile.name, -100.0, ["cloud-backed model excluded"], True))
             continue
