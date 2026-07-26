@@ -27,10 +27,12 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - One-command `cook` workflow and installable `head-chef-local-router` Codex skill.
 - Digest-bound strength evidence and outcomes; changed tags cannot inherit old evidence.
 - Immutable, category-specific benchmark attempts and evidence-based station assignment.
+- Repository-independent private runtime and stable launcher installed under Codex home.
+- Machine-global digest-safe benchmark fallback; every dispatch adds metadata-only global learning evidence.
 
 ## Validation completed in the isolated build environment
 
-- 48 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 50 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Installer and test script passed on current Windows host with Python 3.11; initial BOM defect in `.pth` creation was found and fixed.
 - Ollama 0.32.3 doctor passed on loopback and discovered 12 installed models.
 - One real Qwen embedding dispatch passed through `/api/embed`.
@@ -46,6 +48,7 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Planning comparison selected Gemma e4b (100, 14.4s) over Gemma 26B (94, 32.4s); Qwen Coder failed that planning contract.
 - `cook` auto-routing exercised all seven categories and selected the intended station.
 - Codex skill structure passed validation and a forward-use review.
+- Fresh skill install, safe upgrade backup, installed doctor/kitchen/cook, portable runtime import, and global outcome learning passed on this host.
 
 ## Not yet proven
 

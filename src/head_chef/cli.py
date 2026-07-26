@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from dataclasses import asdict
 import io
 import json
+import os
 from pathlib import Path
 import platform
 import sys
@@ -58,6 +59,39 @@ def _profiles(client: OllamaClient, settings: Settings) -> list[ModelProfile]:
                 pass
         profiles.append(profile_from_ollama(raw, show, settings.default_context_tokens))
     return profiles
+
+
+def _global_evidence_path(relative: str) -> Path | None:
+    global_state = os.getenv("HEAD_CHEF_GLOBAL_STATE")
+    if global_state:
+        global_root = Path(global_state).resolve()
+        global_path = (global_root / relative).resolve()
+        try:
+            global_path.relative_to(global_root)
+        except ValueError:
+            return None
+        return global_path
+    return None
+
+
+def _evidence_path(root: Path, settings: Settings, relative: str) -> Path:
+    local = root / settings.state_dir / relative
+    if local.exists():
+        return local
+    global_path = _global_evidence_path(relative)
+    if global_path and global_path.exists():
+        return global_path
+    return local
+
+
+def _append_outcome(local_path: Path, outcome: dict[str, Any]) -> None:
+    append_jsonl(local_path, outcome)
+    global_path = _global_evidence_path("outcomes.jsonl")
+    if global_path and global_path != local_path.resolve():
+        try:
+            append_jsonl(global_path, outcome)
+        except OSError as exc:
+            print(f"Warning: could not update global routing evidence: {exc}", file=sys.stderr)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -144,7 +178,7 @@ def _context_text(args: argparse.Namespace) -> str:
 
 def _decision(args: argparse.Namespace, profiles: list[ModelProfile], settings: Settings, root: Path):
     context = _context_text(args)
-    benchmark_path = root / settings.state_dir / "benchmarks" / "latest.json"
+    benchmark_path = _evidence_path(root, settings, "benchmarks/latest.json")
     return route(
         RouteRequest(
             task=args.task,
@@ -157,7 +191,7 @@ def _decision(args: argparse.Namespace, profiles: list[ModelProfile], settings: 
         reserved_output_tokens=settings.reserved_output_tokens,
         safety_margin_tokens=settings.safety_margin_tokens,
         benchmark_path=benchmark_path,
-        outcome_path=root / settings.state_dir / "outcomes.jsonl",
+        outcome_path=_evidence_path(root, settings, "outcomes.jsonl"),
     )
 
 
@@ -225,8 +259,8 @@ def cmd_job(args: argparse.Namespace) -> int:
             profiles,
             reserved_output_tokens=settings.reserved_output_tokens,
             safety_margin_tokens=settings.safety_margin_tokens,
-            benchmark_path=root / settings.state_dir / "benchmarks" / "latest.json",
-            outcome_path=root / settings.state_dir / "outcomes.jsonl",
+            benchmark_path=_evidence_path(root, settings, "benchmarks/latest.json"),
+            outcome_path=_evidence_path(root, settings, "outcomes.jsonl"),
         )
 
     job = create_job_card(
@@ -394,16 +428,13 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         review_notes=verification.notes,
     )
     run_path = save_run(run, state / "runs")
-    append_jsonl(
-        state / "outcomes.jsonl",
-        {
-            "created_at": utc_now(), "job_id": job.id, "run_id": run.run_id,
-            "model": job.selected_model, "category": job.category, "ok": not errors,
-            "model_digest": job.model_digest,
-            "elapsed_seconds": round(time.perf_counter() - started, 3),
-            "review_status": verification.status,
-        },
-    )
+    _append_outcome(state / "outcomes.jsonl", {
+        "created_at": utc_now(), "job_id": job.id, "run_id": run.run_id,
+        "model": job.selected_model, "category": job.category, "ok": not errors,
+        "model_digest": job.model_digest,
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "review_status": verification.status,
+    })
     _json({"run_path": str(run_path), "run": _public_run(run), "verification": verification.to_dict()})
     return 0 if not errors else 4
 
@@ -469,15 +500,15 @@ def cmd_kitchen(args: argparse.Namespace) -> int:
     settings, root = load_settings()
     try:
         profiles = _profiles(_client(settings), settings)
-        overrides = load_overrides(root / settings.state_dir / "model-overrides.json")
+        overrides = load_overrides(_evidence_path(root, settings, "model-overrides.json"))
         profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
     except (OllamaError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     result = build_kitchen(
         profiles,
-        benchmark_path=root / settings.state_dir / "benchmarks" / "latest.json",
-        outcome_path=root / settings.state_dir / "outcomes.jsonl",
+        benchmark_path=_evidence_path(root, settings, "benchmarks/latest.json"),
+        outcome_path=_evidence_path(root, settings, "outcomes.jsonl"),
     )
     _json(result)
     return 0

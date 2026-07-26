@@ -119,13 +119,15 @@ Head Chef treats models as stations, not interchangeable general workers:
 
 Cloud-tag models are excluded by default. Manual overrides cannot assign a model outside advertised capabilities. Successful, invalid, and timed-out dispatches feed category-specific latency/reliability evidence into future routing.
 
+Installed skills seed new projects with the machine's digest-matched strength evidence. Each dispatch records metadata-only outcomes both in the project and in the private global runtime, so later projects start with improved routing without sharing prompts or responses.
+
 Install optional Codex skill:
 
 ```powershell
 .\scripts\Install-CodexSkill.ps1
 ```
 
-Restart Codex, then invoke `$head-chef-local-router`. Repository `AGENTS.md` also defines direct Head Chef behavior.
+This installs a repository-independent private runtime, the skill, and a stable launcher under your Codex home. Restart Codex, then invoke `$head-chef-local-router`. Use `-Force` to upgrade an existing installation while preserving timestamped skill and runtime backups. Repository `AGENTS.md` also defines direct Head Chef behavior.
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents

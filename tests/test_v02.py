@@ -13,11 +13,12 @@ from head_chef.models import ModelProfile
 from head_chef.models import infer_capabilities
 from head_chef.ollama import OllamaClient, OllamaResponse
 from head_chef.registry import apply_overrides
-from head_chef.cli import _captured_command, _json, _public_run, build_parser
+from head_chef.cli import _append_outcome, _captured_command, _evidence_path, _json, _public_run, build_parser
 from head_chef.kitchen import build_kitchen
 from head_chef.benchmark import _chat_score, benchmark_model, run_benchmarks
 from contextlib import redirect_stdout
 import io
+from unittest.mock import patch
 from head_chef.router import RouteRequest, route
 from head_chef.runs import RunRecord, next_attempt, save_run
 from head_chef.storage import ensure_state
@@ -266,6 +267,42 @@ class RegistryTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_global_evidence_fallback_and_local_precedence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            project = base / "project"
+            global_state = base / "global"
+            project.mkdir()
+            (global_state / "benchmarks").mkdir(parents=True)
+            global_evidence = global_state / "benchmarks" / "latest.json"
+            global_evidence.write_text("{}", encoding="utf-8")
+            with patch.dict("os.environ", {"HEAD_CHEF_GLOBAL_STATE": str(global_state)}):
+                self.assertEqual(
+                    _evidence_path(project, Settings(), "benchmarks/latest.json"),
+                    global_evidence,
+                )
+                local_evidence = project / ".head-chef" / "benchmarks" / "latest.json"
+                local_evidence.parent.mkdir(parents=True)
+                local_evidence.write_text("{}", encoding="utf-8")
+                self.assertEqual(
+                    _evidence_path(project, Settings(), "benchmarks/latest.json"),
+                    local_evidence,
+                )
+
+    def test_outcomes_improve_project_and_global_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            local = base / "project" / "outcomes.jsonl"
+            global_state = base / "global"
+            outcome = {"model": "m", "model_digest": "d", "category": "analysis", "ok": True}
+            with patch.dict("os.environ", {"HEAD_CHEF_GLOBAL_STATE": str(global_state)}):
+                _append_outcome(local, outcome)
+            self.assertEqual(json.loads(local.read_text(encoding="utf-8")), outcome)
+            self.assertEqual(
+                json.loads((global_state / "outcomes.jsonl").read_text(encoding="utf-8")),
+                outcome,
+            )
+
     def test_public_run_does_not_echo_packaged_prompt(self):
         run = RunRecord("job", "model", "chat", 1, True, prompt="private source")
         self.assertNotIn("prompt", _public_run(run))

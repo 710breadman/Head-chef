@@ -10,13 +10,25 @@ Even review-only runs create `.head-chef` audit records. Do not run Head Chef wh
 
 ## Workflow
 
-1. Run `head-chef kitchen`. On repository Windows installs, use `.\.venv\Scripts\head-chef.cmd kitchen`.
-2. Keep work with Codex when no station exists, routing abstains, context cannot be packaged safely, or task needs silent architecture, migration, security, licensing, destructive, or public-interface decisions.
-3. Define narrow task, explicit project root, allowed files, forbidden files, acceptance criteria, tests, and exclusions.
-4. Use one command:
+1. Resolve the installed launcher:
 
 ```powershell
-.\.venv\Scripts\head-chef.cmd cook `
+$HeadChefSkill = if ($env:CODEX_HOME) {
+  Join-Path $env:CODEX_HOME "skills\head-chef-local-router"
+} else {
+  Join-Path $HOME ".codex\skills\head-chef-local-router"
+}
+$HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
+& $HeadChef kitchen
+```
+
+2. Stop and tell the user to run `scripts\Install-CodexSkill.ps1` from the Head Chef repository if the launcher reports that installation is missing.
+3. Keep work with Codex when no station exists, routing abstains, context cannot be packaged safely, or task needs silent architecture, migration, security, licensing, destructive, or public-interface decisions.
+4. Define narrow task, explicit project root, allowed files, forbidden files, acceptance criteria, tests, and exclusions.
+5. Use one command:
+
+```powershell
+& $HeadChef cook `
   --project "C:\Projects\App" `
   --task "Find validation bug and propose fix guidance" `
   --category coding `
@@ -26,11 +38,11 @@ Even review-only runs create `.head-chef` audit records. Do not run Head Chef wh
   --test "python -m unittest tests.test_config"
 ```
 
-5. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
-6. If output status is `split`, dispatch independent child jobs first. Dispatch synthesis only after every dependency has usable reviewed output.
-7. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
-8. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `head-chef review`.
-9. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.
+6. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
+7. If output status is `split`, dispatch independent child jobs first. Dispatch synthesis only after every dependency has usable reviewed output.
+8. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
+9. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `& $HeadChef review`.
+10. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.
 
 ## Routing rules
 
