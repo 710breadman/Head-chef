@@ -496,8 +496,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         job.acceptance_criteria,
         coordinator_review_required=job.coordinator_review_required,
     )
+    run_ok = _worker_run_succeeded(parsed, errors, verification.acceptance_complete)
     run = RunRecord(
-        job.id, job.selected_model, execution.executor, attempt, not errors,
+        job.id, job.selected_model, execution.executor, attempt, run_ok,
         model_digest=job.model_digest, prompt=prompt,
         response=parsed if parsed is not None else response.content,
         validation_errors=errors,
@@ -514,13 +515,22 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     run_path = save_run(run, state / "runs")
     _append_outcome(state / "outcomes.jsonl", {
         "created_at": utc_now(), "job_id": job.id, "run_id": run.run_id,
-        "model": job.selected_model, "category": job.category, "ok": not errors,
+        "model": job.selected_model, "category": job.category, "ok": run_ok,
         "model_digest": job.model_digest,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "review_status": verification.status,
     })
     _json({"run_path": str(run_path), "run": _public_run(run), "verification": verification.to_dict()})
-    return 0 if not errors else 4
+    return 0 if run_ok else 4 if errors else 5
+
+
+def _worker_run_succeeded(
+    parsed: object,
+    validation_errors: list[str],
+    acceptance_complete: bool,
+) -> bool:
+    blockers = parsed.get("blockers", []) if isinstance(parsed, dict) else []
+    return not validation_errors and acceptance_complete and not blockers
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -709,9 +719,13 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     output = state / "orchestration" / "sprint-plan.json"
     atomic_write_json(output, plan)
     role_counts: dict[str, int] = {}
+    assignment_status_counts: dict[str, int] = {}
     for task in plan["tasks"]:
-        station = task["primary_assignment"]["station"]
+        primary_assignment = task["primary_assignment"]
+        station = primary_assignment["station"] or "coordinator-only"
         role_counts[station] = role_counts.get(station, 0) + 1
+        assignment_status = primary_assignment["status"]
+        assignment_status_counts[assignment_status] = assignment_status_counts.get(assignment_status, 0) + 1
     local_analysis = plan.get("local_phase_analysis", {})
     _json({
         "status": "planned",
@@ -721,9 +735,13 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "task_count": plan["task_count"],
         "actionable_task_ids": plan["actionable_task_ids"],
         "primary_role_counts": role_counts,
+        "assignment_status_counts": assignment_status_counts,
         "local_analysis_model": local_analysis.get("model"),
         "local_analysis_phases": len(local_analysis.get("reviews", [])),
         "local_analysis_errors": local_analysis.get("errors", []),
+        "local_assignment_disagreements": local_analysis.get("assignment_disagreement_count", 0),
+        "local_station_disagreements": local_analysis.get("station_disagreement_count", 0),
+        "local_scope_disagreements": local_analysis.get("scope_disagreement_count", 0),
     })
     return 0
 
@@ -788,8 +806,45 @@ def cmd_work(args: argparse.Namespace) -> int:
         assignment = task.get("primary_assignment", {})
         category = assignment.get("station")
         model = assignment.get("model")
+        assignment_status = assignment.get("status", "assigned")
+        local_review = task.get("local_assignment_review", {})
+        if (
+            isinstance(local_review, dict)
+            and local_review.get("station_agrees") is False
+            and not args.accept_assignment_review
+        ):
+            results.append({
+                "task_id": task.get("id"),
+                "status": "assignment_review_required",
+                "deterministic_station": category,
+                "local_recommended_station": local_review.get("recommended_primary_station"),
+                "reason": "Deterministic profile and local planning reviewer disagree. Review before dispatch.",
+            })
+            final_code = max(final_code, 2)
+            continue
+        if assignment_status == "abstained":
+            results.append({
+                "task_id": task.get("id"),
+                "status": "coordinator_required",
+                "reason": assignment.get("reason"),
+            })
+            final_code = max(final_code, 2)
+            continue
+        if assignment_status == "conditional" and not args.image:
+            results.append({
+                "task_id": task.get("id"),
+                "status": "input_required",
+                "required_inputs": assignment.get("required_inputs", []),
+                "reason": "Supply --image for the assigned vision station.",
+            })
+            final_code = max(final_code, 2)
+            continue
         if category not in STRENGTH_CASES or not isinstance(model, str) or not model:
-            results.append({"task_id": task.get("id"), "status": "unassigned"})
+            results.append({
+                "task_id": task.get("id"),
+                "status": "no_eligible_model",
+                "reason": assignment.get("reason"),
+            })
             final_code = max(final_code, 2)
             continue
         task_text = (
@@ -806,14 +861,21 @@ def cmd_work(args: argparse.Namespace) -> int:
             prefer_speed=False,
             allowed_file=_existing_plan_files(project, list(task.get("expected_files") or [])),
             forbidden_file=[],
-            acceptance=list(task.get("acceptance_criteria") or []),
+            acceptance=(
+                [
+                    "Provide concrete bounded guidance for coordinator action",
+                    "Map guidance to every sprint acceptance criterion",
+                ]
+                if task.get("task_profile", {}).get("local_scope") == "advisory"
+                else list(task.get("acceptance_criteria") or [])
+            ),
             test=[],
             context_note=[
                 f"Dependencies: {', '.join(task.get('dependencies') or []) or 'none'}",
                 f"Prior evidence: {'; '.join(task.get('evidence') or []) or 'none'}",
             ],
             exclude=["No unrelated sprint work", "Do not execute commands or modify files"],
-            image=[],
+            image=list(args.image),
             complexity=args.complexity,
             risk=args.risk,
             context_tokens=args.context_tokens,
@@ -1321,6 +1383,12 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--project", default=".")
     work.add_argument("--task-id", action="append", default=[])
     work.add_argument("--all-ready", action="store_true")
+    work.add_argument("--image", action="append", default=[], help="Project-local input for a ready vision task.")
+    work.add_argument(
+        "--accept-assignment-review",
+        action="store_true",
+        help="Dispatch deterministic station after reviewing a local station disagreement.",
+    )
     work.add_argument("--context-tokens", type=int)
     work.add_argument("--output-tokens", type=int)
     work.add_argument("--max-attempts", type=int, default=3)

@@ -137,10 +137,12 @@ discover JSON manifest
   -> load referenced task files
   -> merge task state, requirements, dependencies, files, evidence
   -> hash every source
-  -> infer primary and supporting stations
+  -> create structured task profile (work kind, modality, risk, tools, local scope)
+  -> infer primary and supporting stations or explicitly abstain
   -> route only to capability-matched local models
-  -> local planning model reviews every phase and task
+  -> local planning model independently reviews every phase, task, station, and scope
+  -> flag deterministic/local-review disagreements without auto-overriding gates
   -> save refreshable sprint-plan.json
 ```
 
-The derived plan never changes project sprint state. Codex dispatches only actionable work, preserves project dependency rules, and remains final reviewer.
+Each assignment records status (`assigned`, `conditional`, `unfilled`, or `abstained`), scope, required inputs, score, evidence, and reason. Command-execution tasks are local-advisory because bounded workers have no shell. Owner/legal/destructive decisions have no primary local station. Deterministic policy is authoritative and repeatable; the temperature-zero local review is advisory and may still vary by runtime. Station disagreements block `work` until explicitly reviewed. The derived plan never changes project sprint state.

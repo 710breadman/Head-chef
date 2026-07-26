@@ -38,13 +38,18 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Transient Ollama transport retry plus schema-failure specialist fallback.
 - Automatic independent local analysis review of dependency-ready sprint work.
 - Hard station-admission rejection for current-digest failed strength evaluations.
+- Structured sprint task profiles with risk, modalities, required tools/inputs, and full/advisory/none local scope.
+- Explicit assigned/conditional/unfilled/abstained station states with routing score evidence and reasons.
+- Independent temperature-zero local station/scope review; disagreements are visible and station conflicts block dispatch.
 
 ## Validation completed in the isolated build environment
 
-- 69 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 81 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Live refresh on this host reconciled 12 installed entries, excluded the cloud tag, and rebuilt all seven local stations.
 - Live 4K forced split dispatched two children; one schema failure rerouted from Gemma e4b to Gemma 26B; synthesis then passed.
 - Live `work` on TBWL-011 used Qwen Coder, saved target-local evidence, and ran Gemma e4b as independent reviewer.
+- Regenerated TBWL plan: 45 tasks, 45 assigned, 38 full-local, 7 advisory, 6 phase reviews, no review errors; local station/scope disagreements were preserved for review.
+- A live Gemma skeptical review reported missing execution evidence and a true blocker; the strengthened dispatcher correctly saved immutable attempt 2 as `ok: false` and exited nonzero.
 - Installer and test script passed on current Windows host with Python 3.11; initial BOM defect in `.pth` creation was found and fixed.
 - Ollama 0.32.3 doctor passed on loopback and discovered 12 installed models.
 - One real Qwen embedding dispatch passed through `/api/embed`.

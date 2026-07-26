@@ -196,6 +196,14 @@ class ContextTests(unittest.TestCase):
 
 
 class RunAndVerificationTests(unittest.TestCase):
+    def test_worker_run_requires_schema_acceptance_and_no_blockers(self):
+        from head_chef.cli import _worker_run_succeeded
+
+        self.assertTrue(_worker_run_succeeded({"blockers": []}, [], True))
+        self.assertFalse(_worker_run_succeeded({"blockers": ["Need input"]}, [], True))
+        self.assertFalse(_worker_run_succeeded({"blockers": []}, [], False))
+        self.assertFalse(_worker_run_succeeded({"blockers": []}, ["invalid"], True))
+
     def test_run_attempts_are_immutable(self):
         with tempfile.TemporaryDirectory() as temp:
             runs = Path(temp)

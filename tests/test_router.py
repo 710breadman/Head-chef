@@ -53,6 +53,14 @@ class RouterTests(unittest.TestCase):
         decision = route(RouteRequest(task="Inspect this screenshot for visual defects"), self.models)
         self.assertEqual(decision.selected_model, "qwen3-vl:8b-instruct")
 
+    def test_abstains_when_no_model_advertises_required_station(self):
+        decision = route(
+            RouteRequest(task="Implement code", required_capability="coding"),
+            [ModelProfile("writer", capabilities={"analysis", "writing"})],
+        )
+        self.assertIsNone(decision.selected_model)
+        self.assertTrue(decision.candidates[0].rejected)
+
     def test_large_general_task_prefers_large_model(self):
         decision = route(RouteRequest(task="Analyze the architecture and recommend a roadmap"), self.models)
         self.assertEqual(decision.selected_model, "gemma4:26b")

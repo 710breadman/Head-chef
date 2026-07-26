@@ -57,3 +57,13 @@
 **Decision:** Do not add a software license during the greenfield bootstrap.
 
 **Reason:** A license is a legal permission grant and should reflect owner intent.
+
+## ADR-010 — Continue as one skill, not a plugin
+
+**Decision:** Head Chef remains a focused Codex skill backed by its local CLI.
+
+**Reason:** It is one personal workflow still being refined. It needs reusable instructions and local scripts, but no connector, MCP server, UI, marketplace bundle, or related skill family.
+
+**Promotion gate:** Package it as a plugin only when the workflow is stable and needs team/public installation, multiple bundled skills, or an MCP-backed tool surface.
+
+**Evidence:** Current Codex guidance recommends starting with a skill for one personal workflow and using a plugin for stable distribution, related skills, connectors, or MCP.

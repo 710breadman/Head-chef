@@ -1,8 +1,8 @@
 # Project state
 
-- Goal: strongest safe local coordinator: discover model changes, tune context per task, maximize local work, and recover from failures.
-- Decisions: benchmark models only in advertised strengths; local-only by default; hard capability gates; Codex retains review and application authority.
-- Changes: added machine-global inventory/new-digest eval; adaptive split/child/synthesis; transient retry and capability fallback; dependency-ready `work`; local support review; cross-project isolation fix; source/context safety.
-- Tests: 69 passed, 1 Windows symlink privilege skip; live 12-model refresh, forced split/fallback/synthesis, and target-local TBWL-011 Qwen plus Gemma review passed.
+- Goal: best coordinator of local-AI workflows, with sprint-aware evidence-based station assignment and explicit abstention.
+- Decisions: remain one focused skill plus local CLI; plugins deferred until stable distribution or MCP/connectors are needed; hard capability gates; Codex remains final authority.
+- Changes: structured sprint profiles; explicit assignment states/scope/evidence; hard capability rejection; local station review; untrusted-context boundary; incomplete/blocker runs now fail.
+- Tests: 81 passed, 1 Windows symlink privilege skip; TBWL plan found 45 assigned tasks; live Gemma review correctly saved an incomplete blocker run as `ok:false`.
 - Blockers: clean-machine Windows install and privileged Windows reparse-path acceptance remain unproven; repository license needs owner selection before release.
-- Next action: final security/diff audit, push, verify CI; observe a future real model install separately.
+- Next action: commit, push, verify draft PR CI.

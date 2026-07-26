@@ -11,6 +11,7 @@
 | Recover on worker failure | Transient transport retry; invalid structured output can create capability-gated fallback jobs | Proven by unit retry and live Gemma e4b failure to Gemma 26B success |
 | Understand premade sprints first | `orchestrate` discovers and hashes sprint sources, merges task contracts, dependencies, acceptance, evidence, and roles | Proven on The Boy Who Lived: 7 sources, 45 tasks, one actionable task |
 | Push ready work local | `work` dispatches dependency-ready tasks to preassigned primary models and runs an independent local analysis review | Proven live on TBWL-011 with Qwen Coder plus Gemma reviewer |
+| Determine sprint stations, if any | Structured deterministic profile assigns, conditions, leaves unfilled, or abstains; local planner independently reviews station and scope | Proven by synthetic abstention/capability/disagreement tests and live 45-task TBWL plan |
 | Preserve project isolation | Project-relative context, plan-file traversal filtering, job-path verification, target-local jobs/runs | Proven by tests and corrected live cross-project run |
 | Preserve coordinator safety | No local shell/filesystem tools; manual model choice cannot weaken capability/review policy; coding/planning remain pending | Proven by policy tests and live pending coding result |
 

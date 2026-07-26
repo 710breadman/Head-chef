@@ -22,6 +22,7 @@ ROLE_NAMES = {
     "retrieval": "research station",
     "analysis": "verification station",
 }
+STATIONS = set(ROLE_NAMES)
 PHASE_REVIEW_SCHEMA = {
     "type": "object",
     "required": ["phase_summary", "task_notes"],
@@ -31,11 +32,28 @@ PHASE_REVIEW_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["id", "needs", "risks"],
+                "required": [
+                    "id",
+                    "needs",
+                    "risks",
+                    "recommended_primary_station",
+                    "recommended_supporting_stations",
+                    "local_scope",
+                ],
                 "properties": {
                     "id": {"type": "string"},
                     "needs": {"type": "array", "items": {"type": "string"}},
                     "risks": {"type": "array", "items": {"type": "string"}},
+                    "recommended_primary_station": {
+                        "type": "string",
+                        "enum": sorted(STATIONS | {"coordinator_only"}),
+                    },
+                    "recommended_supporting_stations": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(STATIONS)},
+                        "uniqueItems": True,
+                    },
+                    "local_scope": {"type": "string", "enum": ["full", "advisory", "none"]},
                 },
                 "additionalProperties": False,
             },
@@ -165,7 +183,7 @@ def normalize_task(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def infer_stations(task: dict[str, Any]) -> tuple[str, list[str]]:
+def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
     text = " ".join(
         [
             task["title"],
@@ -174,6 +192,7 @@ def infer_stations(task: dict[str, Any]) -> tuple[str, list[str]]:
             *task["expected_files"],
         ]
     ).casefold()
+    action_text = f"{task['title']} {task['objective']}".casefold()
     has = lambda term: re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
     expected = task["expected_files"]
     codeish = any(
@@ -186,8 +205,42 @@ def infer_stations(task: dict[str, Any]) -> tuple[str, list[str]]:
     writing = any(has(word) for word in ("dialogue", "narrative", "prose", "chapter", "story", "rewrite"))
     retrieval = any(has(word) for word in ("research", "inventory", "retrieve", "source review"))
     embedding = any(has(word) for word in ("embedding", "semantic index", "vector index"))
+    owner_only = any(
+        phrase in action_text
+        for phrase in (
+            "select license",
+            "choose license",
+            "legal decision",
+            "rotate secret",
+            "rotate credential",
+            "production deploy",
+            "publish release",
+            "delete production",
+            "destructive migration",
+            "purchase",
+        )
+    )
+    tool_required = any(
+        re.search(rf"(?<![a-z0-9]){verb}(?![a-z0-9])", action_text)
+        for verb in ("run", "execute", "install", "launch", "compile", "deploy", "benchmark", "smoke test")
+    )
+    high_risk = owner_only or any(
+        phrase in text
+        for phrase in (
+            "security policy",
+            "public interface",
+            "database migration",
+            "schema migration",
+            "production",
+            "credential",
+            "secret",
+            "license",
+        )
+    )
 
-    if embedding:
+    if owner_only:
+        primary: str | None = None
+    elif embedding:
         primary = "embedding"
     elif planning:
         primary = "planning"
@@ -214,7 +267,47 @@ def infer_stations(task: dict[str, Any]) -> tuple[str, list[str]]:
             support.append(station)
     if primary in {"coding", "vision", "planning"} and "analysis" not in support:
         support.append("analysis")
-    return primary, support[:3]
+    if primary is None and "analysis" not in support:
+        support.insert(0, "analysis")
+
+    required_inputs = ["image"] if visual and primary == "vision" else []
+    required_tools = ["shell"] if tool_required else []
+    local_scope = "none" if owner_only else "advisory" if tool_required or high_risk else "full"
+    coordinator_reasons: list[str] = []
+    if owner_only:
+        coordinator_reasons.append("Owner/legal/destructive decision cannot be delegated to a local model.")
+    if tool_required:
+        coordinator_reasons.append("Acceptance requires command execution unavailable to bounded local workers.")
+    if high_risk and not owner_only:
+        coordinator_reasons.append("High-risk change requires coordinator review and application.")
+    return {
+        "schema_version": "1.0",
+        "work_kind": primary or "coordinator_decision",
+        "primary_station": primary,
+        "supporting_stations": support[:3],
+        "modalities": ["text", "image"] if visual else ["text"],
+        "risk": "high" if high_risk else "medium" if tool_required else "low",
+        "required_inputs": required_inputs,
+        "required_tools": required_tools,
+        "local_scope": local_scope,
+        "coordinator_action_required": local_scope != "full",
+        "coordinator_reasons": coordinator_reasons,
+        "signals": {
+            "code": codeish,
+            "visual": visual,
+            "planning": planning,
+            "writing": writing,
+            "retrieval": retrieval,
+            "embedding": embedding,
+            "owner_only": owner_only,
+            "tool_required": tool_required,
+        },
+    }
+
+
+def infer_stations(task: dict[str, Any]) -> tuple[str | None, list[str]]:
+    profile = profile_sprint_task(task)
+    return profile["primary_station"], profile["supporting_stations"]
 
 
 def build_sprint_plan(
@@ -227,7 +320,9 @@ def build_sprint_plan(
     completed = {task["id"] for task in tasks if task["status"] in {"done", "completed", "accepted"}}
     planned: list[dict[str, Any]] = []
     for task in tasks:
-        primary, supporting = infer_stations(task)
+        task_profile = profile_sprint_task(task)
+        primary = task_profile["primary_station"]
+        supporting = task_profile["supporting_stations"]
 
         def assignment(station: str) -> dict[str, Any]:
             decision = route(
@@ -240,19 +335,44 @@ def build_sprint_plan(
                 benchmark_path=benchmark_path,
                 outcome_path=outcome_path,
             )
+            selected = next(
+                (candidate for candidate in decision.candidates if candidate.model == decision.selected_model),
+                None,
+            )
+            required_inputs = ["image"] if station == "vision" else []
+            status = "unfilled" if not decision.selected_model else "conditional" if required_inputs else "assigned"
             return {
                 "station": station,
                 "role": ROLE_NAMES[station],
                 "model": decision.selected_model,
                 "confidence": decision.confidence,
                 "review_required": decision.coordinator_review_required,
+                "status": status,
+                "scope": task_profile["local_scope"] if station == primary else "support",
+                "required_inputs": required_inputs,
+                "reason": decision.explanation,
+                "score": selected.score if selected else None,
+                "score_evidence": selected.reasons if selected else [],
             }
 
         item = dict(task)
         item["actionable"] = task["status"] in {"ready", "active", "in_progress"} and all(
             dependency in completed for dependency in task["dependencies"]
         )
-        item["primary_assignment"] = assignment(primary)
+        item["task_profile"] = task_profile
+        item["primary_assignment"] = assignment(primary) if primary else {
+            "station": None,
+            "role": "coordinator-only decision",
+            "model": None,
+            "confidence": 1.0,
+            "review_required": True,
+            "status": "abstained",
+            "scope": "none",
+            "required_inputs": [],
+            "reason": "; ".join(task_profile["coordinator_reasons"]),
+            "score": None,
+            "score_evidence": [],
+        }
         item["supporting_assignments"] = [assignment(station) for station in supporting]
         planned.append(item)
     return {
@@ -286,7 +406,12 @@ def add_local_phase_analysis(
     errors: list[str] = []
     for phase, tasks in groups.items():
         prompt = (
-            "Analyze only this supplied sprint phase. Explain concrete needs and risks for every task. "
+            "Analyze only this supplied sprint phase. For every task, explain concrete needs and risks, "
+            "recommend exactly one primary station (or coordinator_only), up to three supporting stations, "
+            "and local_scope full/advisory/none. Stations: coding=implementation, vision=actual image inspection, "
+            "embedding=vector creation, planning=architecture/decomposition, writing=prose/dialogue, "
+            "retrieval=supplied-source lookup, analysis=verification. Command execution is advisory because "
+            "workers have no shell. Legal, owner, destructive, secret, and production decisions are coordinator_only. "
             "Do not claim files were inspected or tests ran. Return the required JSON.\n\n"
             + json.dumps({"phase": phase, "tasks": tasks}, ensure_ascii=False)
         )
@@ -295,7 +420,8 @@ def add_local_phase_analysis(
                 model,
                 [{"role": "user", "content": prompt}],
                 format_schema=PHASE_REVIEW_SCHEMA,
-                options={"temperature": 0.1},
+                options={"temperature": 0},
+                think=False,
                 timeout_seconds=timeout_seconds,
             )
             parsed = json.loads(response.content)
@@ -314,6 +440,14 @@ def add_local_phase_analysis(
                 or not all(isinstance(value, str) for value in note["needs"])
                 or not isinstance(note.get("risks"), list)
                 or not all(isinstance(value, str) for value in note["risks"])
+                or note.get("recommended_primary_station") not in STATIONS | {"coordinator_only"}
+                or not isinstance(note.get("recommended_supporting_stations"), list)
+                or not all(value in STATIONS for value in note["recommended_supporting_stations"])
+                or len(note["recommended_supporting_stations"]) > 3
+                or len(note["recommended_supporting_stations"])
+                != len(set(note["recommended_supporting_stations"]))
+                or note.get("recommended_primary_station") in note["recommended_supporting_stations"]
+                or note.get("local_scope") not in {"full", "advisory", "none"}
                 for note in notes
             ):
                 raise ValueError("invalid task note shape")
@@ -329,4 +463,44 @@ def add_local_phase_analysis(
         "reviews": reviews,
         "errors": errors,
     }
+    recommendations = {
+        note["id"]: note
+        for review in reviews
+        for note in review["task_notes"]
+    }
+    disagreement_count = 0
+    station_disagreement_count = 0
+    scope_disagreement_count = 0
+    for task in plan["tasks"]:
+        note = recommendations.get(task["id"])
+        if not note:
+            continue
+        recommended = note["recommended_primary_station"]
+        recommended_station = None if recommended == "coordinator_only" else recommended
+        deterministic_station = task["primary_assignment"]["station"]
+        station_agrees = recommended_station == deterministic_station
+        scope_agrees = note["local_scope"] == task["task_profile"]["local_scope"]
+        agrees = station_agrees and scope_agrees
+        if not agrees:
+            disagreement_count += 1
+        if not station_agrees:
+            station_disagreement_count += 1
+        if not scope_agrees:
+            scope_disagreement_count += 1
+        task["local_assignment_review"] = {
+            "model": model,
+            "recommended_primary_station": recommended_station,
+            "recommended_supporting_stations": note["recommended_supporting_stations"],
+            "recommended_local_scope": note["local_scope"],
+            "station_agrees": station_agrees,
+            "scope_agrees": scope_agrees,
+            "agrees_with_deterministic_profile": agrees,
+            "needs": note["needs"],
+            "risks": note["risks"],
+            "advisory_only": True,
+        }
+        task["assignment_review_required"] = not agrees
+    plan["local_phase_analysis"]["assignment_disagreement_count"] = disagreement_count
+    plan["local_phase_analysis"]["station_disagreement_count"] = station_disagreement_count
+    plan["local_phase_analysis"]["scope_disagreement_count"] = scope_disagreement_count
     return plan

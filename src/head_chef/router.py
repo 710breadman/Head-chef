@@ -258,6 +258,16 @@ def route(
         if category == "embedding" and "embedding" not in profile.capabilities:
             candidates.append(CandidateScore(profile.name, -100.0, ["not an embedding model"], True))
             continue
+        if category not in profile.capabilities and not (
+            category == "analysis" and "planning" in profile.capabilities
+        ):
+            candidates.append(CandidateScore(
+                profile.name,
+                -100.0,
+                [f"does not advertise required {category} capability"],
+                True,
+            ))
+            continue
 
         if category in profile.capabilities:
             score += 45

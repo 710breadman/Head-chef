@@ -127,6 +127,12 @@ Installed skills seed new projects with the machine's digest-matched strength ev
 
 On first use, the skill runs `refresh`, then `orchestrate`. Refresh detects new, changed, and removed Ollama models without downloading anything. Orchestration deterministically parses sprint contracts; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` preserves dependency order.
 
+Sprint assignments are explicit: `assigned`, `conditional` (for example, vision needs an image), `unfilled` (no eligible installed model), or `abstained` (owner/legal/destructive decision). Every task stores a structured profile, assignment reason, score evidence, risk, tool needs, and whether local work is full or advisory.
+
+The local planning station independently recommends a primary station, supporting stations, and local scope for every task. Station and scope disagreements are counted separately. `work` stops on a station disagreement until reviewed; `--accept-assignment-review` explicitly keeps the deterministic assignment. Local advice never silently overrides capability, safety, or abstention gates.
+
+Supplied project context is always untrusted data. A schema-valid worker response is successful only when it covers every top-level acceptance criterion and reports no true blockers; incomplete evidence exits `5` and can trigger fallback.
+
 `cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Lower limits drive safe file-boundary splitting. By default, child jobs run locally and a new synthesis job receives their immutable schema-validated evidence. Use `--no-auto-split` only for manual orchestration. Every retry remains immutable.
 
 After `orchestrate`, run `head-chef work --project "C:\Projects\App"` for the first dependency-ready task, or add `--all-ready` for every currently independent ready task. Head Chef packages only existing regular files named by the sprint contract. Local workers propose results; Codex still reviews and applies changes.
