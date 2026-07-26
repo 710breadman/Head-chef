@@ -29,6 +29,7 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Immutable, category-specific benchmark attempts and evidence-based station assignment.
 - Repository-independent private runtime and stable launcher installed under Codex home.
 - Machine-global digest-safe benchmark fallback; every dispatch adds metadata-only global learning evidence.
+- First-use sprint orchestration: contract discovery, source hashing, task-detail merge, dependency/actionability map, primary/supporting stations, and local phase analysis.
 
 ## Validation completed in the isolated build environment
 

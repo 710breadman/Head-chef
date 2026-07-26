@@ -127,3 +127,20 @@ Codex task profile
 ```
 
 Specialist names narrow capability inference. Coder, story/writing, vision-language, and embedding models do not inherit unrelated family roles. Generalists cover planning, analysis, writing, and retrieval only when metadata/inference supports them.
+
+## Sprint orchestration
+
+First project use runs a deterministic sprint-contract pass before delegation:
+
+```text
+discover JSON manifest
+  -> load referenced task files
+  -> merge task state, requirements, dependencies, files, evidence
+  -> hash every source
+  -> infer primary and supporting stations
+  -> route only to capability-matched local models
+  -> local planning model reviews every phase and task
+  -> save refreshable sprint-plan.json
+```
+
+The derived plan never changes project sprint state. Codex dispatches only actionable work, preserves project dependency rules, and remains final reviewer.

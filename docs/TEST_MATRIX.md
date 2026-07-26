@@ -17,6 +17,7 @@
 | Windows install | Script syntax only | Clean Windows 11 | Nontechnical flow | Pending |
 | Privacy boundary | Documentation | Inspect `.gitignore` | Security review | Initial |
 | Oversized dispatch block | Contract tests | Real job | Error clarity | Automated pass |
+| Sprint orchestration | Discovery/merge/role/coverage tests | 45-task project, six local phase calls | Role audit | Automated + local hardware pass |
 
 ## Test commands
 

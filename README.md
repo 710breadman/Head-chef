@@ -22,6 +22,7 @@ It does not replace Codex, secretly edit files, or invent a complicated autonomo
 - Records every success or failure as a unique, immutable run attempt.
 - Requires structured worker JSON, validates it, then gates acceptance behind coordinator review policy.
 - Runs task-specific, versioned opt-in benchmarks against already-installed models.
+- Discovers structured sprint contracts, merges task details, analyzes each phase locally, and pre-assigns primary/supporting stations.
 - Provides a Windows-friendly doctor and installation script.
 
 ## Safety boundary
@@ -106,6 +107,7 @@ State and evidence are recorded
 | `checkpoint` / `resume` | Save or read compact Codex-facing handoff state. |
 | `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
 | `cook` | Route, package, dispatch, validate, and record one bounded task. |
+| `orchestrate` / `sprint-plan` | Discover sprint files, analyze every phase locally, and save role assignments. |
 
 ## Kitchen routing
 
@@ -120,6 +122,8 @@ Head Chef treats models as stations, not interchangeable general workers:
 Cloud-tag models are excluded by default. Manual overrides cannot assign a model outside advertised capabilities. Successful, invalid, and timed-out dispatches feed category-specific latency/reliability evidence into future routing.
 
 Installed skills seed new projects with the machine's digest-matched strength evidence. Each dispatch records metadata-only outcomes both in the project and in the private global runtime, so later projects start with improved routing without sharing prompts or responses.
+
+On first use in a project, the skill runs `orchestrate`. Structured sprint parsing remains deterministic; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` maps each task to a primary model station and useful supporting stations while preserving dependency order.
 
 Install optional Codex skill:
 

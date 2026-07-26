@@ -26,6 +26,7 @@ from .runs import RunRecord, next_attempt, save_run
 from .registry import apply_overrides, load_overrides, save_registry
 from .context_packager import package_context, render_package, split_context
 from .kitchen import build_kitchen
+from .orchestration import add_local_phase_analysis, build_sprint_plan, discover_sprint_file, load_sprint_tasks
 from .token_governor import evaluate_budget
 
 
@@ -514,6 +515,76 @@ def cmd_kitchen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_orchestrate(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, _ = load_settings(project)
+    state = ensure_state(project, settings.state_dir)
+    try:
+        client = _client(settings)
+        profiles = _profiles(client, settings)
+        overrides = load_overrides(_evidence_path(project, settings, "model-overrides.json"))
+        profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
+        manifest = discover_sprint_file(project, args.sprint_file)
+        tasks, sources = load_sprint_tasks(project, manifest)
+        plan = build_sprint_plan(
+            tasks,
+            profiles,
+            benchmark_path=_evidence_path(project, settings, "benchmarks/latest.json"),
+            outcome_path=_evidence_path(project, settings, "outcomes.jsonl"),
+        )
+        if not args.no_local_analysis:
+            planning = route(
+                RouteRequest(
+                    task="Understand sprint requirements, dependencies, risks, and orchestration needs",
+                    required_capability="planning",
+                    prefer_quality=True,
+                ),
+                profiles,
+                benchmark_path=_evidence_path(project, settings, "benchmarks/latest.json"),
+                outcome_path=_evidence_path(project, settings, "outcomes.jsonl"),
+            )
+            if not planning.selected_model:
+                raise ValueError("No local planning station is available for sprint analysis")
+            add_local_phase_analysis(
+                plan,
+                client,
+                planning.selected_model,
+                timeout_seconds=args.timeout or settings.request_timeout_seconds,
+            )
+    except (OllamaError, OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    plan.update({
+        "contract_version": CONTRACT_VERSION,
+        "schema_version": "1.0",
+        "created_at": utc_now(),
+        "project": str(project),
+        "manifest": manifest.relative_to(project).as_posix(),
+        "sources": sources,
+    })
+    output = state / "orchestration" / "sprint-plan.json"
+    atomic_write_json(output, plan)
+    role_counts: dict[str, int] = {}
+    for task in plan["tasks"]:
+        station = task["primary_assignment"]["station"]
+        role_counts[station] = role_counts.get(station, 0) + 1
+    local_analysis = plan.get("local_phase_analysis", {})
+    _json({
+        "status": "planned",
+        "plan_path": str(output),
+        "manifest": plan["manifest"],
+        "source_count": len(sources),
+        "task_count": plan["task_count"],
+        "actionable_task_ids": plan["actionable_task_ids"],
+        "primary_role_counts": role_counts,
+        "local_analysis_model": local_analysis.get("model"),
+        "local_analysis_phases": len(local_analysis.get("reviews", [])),
+        "local_analysis_errors": local_analysis.get("errors", []),
+    })
+    return 0
+
+
 def _captured_command(function, args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     output = io.StringIO()
     with redirect_stdout(output):
@@ -700,6 +771,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     kitchen = sub.add_parser("kitchen", help="Show local specialist stations Codex can route through.")
     kitchen.set_defaults(func=cmd_kitchen)
+
+    orchestrate = sub.add_parser(
+        "orchestrate",
+        aliases=["sprint-plan"],
+        help="Discover sprint contracts, understand tasks, and pre-assign local stations.",
+    )
+    orchestrate.add_argument("--project", default=".")
+    orchestrate.add_argument("--sprint-file", help="Project-relative sprint manifest override.")
+    orchestrate.add_argument("--no-local-analysis", action="store_true")
+    orchestrate.add_argument("--timeout", type=int)
+    orchestrate.set_defaults(func=cmd_orchestrate)
 
     return parser
 
