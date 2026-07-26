@@ -15,6 +15,7 @@ $ResolvedCodexHome = [System.IO.Path]::GetFullPath($CodexHome)
 $SkillsRoot = Join-Path $ResolvedCodexHome "skills"
 $BinRoot = Join-Path $ResolvedCodexHome "bin"
 $ToolsRoot = Join-Path $ResolvedCodexHome "tools"
+$BackupsRoot = Join-Path $ResolvedCodexHome "backups\head-chef"
 $Destination = Join-Path $SkillsRoot "head-chef-local-router"
 $Staging = Join-Path $SkillsRoot (".head-chef-local-router.install-" + $PID)
 $RuntimeRoot = Join-Path $ToolsRoot "head-chef"
@@ -31,14 +32,17 @@ if ((Test-Path -LiteralPath $Destination) -or (Test-Path -LiteralPath $RuntimeRo
 }
 
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmssfff"
+$BackupRoot = Join-Path $BackupsRoot $Timestamp
 New-Item -ItemType Directory -Force -Path $SkillsRoot, $BinRoot, $ToolsRoot | Out-Null
 if (Test-Path -LiteralPath $Destination) {
-    $SkillBackup = "$Destination.backup-$Timestamp"
+    New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
+    $SkillBackup = Join-Path $BackupRoot "skill"
     Move-Item -LiteralPath $Destination -Destination $SkillBackup
     Write-Host "Preserved previous skill: $SkillBackup"
 }
 if (Test-Path -LiteralPath $RuntimeRoot) {
-    $RuntimeBackup = "$RuntimeRoot.backup-$Timestamp"
+    New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
+    $RuntimeBackup = Join-Path $BackupRoot "runtime"
     Move-Item -LiteralPath $RuntimeRoot -Destination $RuntimeBackup
     Write-Host "Preserved previous runtime: $RuntimeBackup"
 }

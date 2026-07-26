@@ -127,7 +127,7 @@ Install optional Codex skill:
 .\scripts\Install-CodexSkill.ps1
 ```
 
-This installs a repository-independent private runtime, the skill, and a stable launcher under your Codex home. Restart Codex, then invoke `$head-chef-local-router`. Use `-Force` to upgrade an existing installation while preserving timestamped skill and runtime backups. Repository `AGENTS.md` also defines direct Head Chef behavior.
+This installs a repository-independent private runtime, the skill, and a stable launcher under your Codex home. Restart Codex, then invoke `$head-chef-local-router`. Use `-Force` to upgrade while preserving timestamped skill and runtime backups under `backups\head-chef`, outside skill discovery. Repository `AGENTS.md` also defines direct Head Chef behavior.
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents
