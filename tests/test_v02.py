@@ -12,8 +12,8 @@ from head_chef.jobs import JobCard
 from head_chef.models import ModelProfile
 from head_chef.models import infer_capabilities
 from head_chef.ollama import OllamaClient, OllamaResponse
-from head_chef.registry import apply_overrides
-from head_chef.cli import _append_outcome, _captured_command, _evidence_path, _json, _public_run, build_parser
+from head_chef.registry import apply_overrides, reconcile_registry
+from head_chef.cli import _append_outcome, _captured_command, _evidence_path, _json, _public_job, _public_run, build_parser
 from head_chef.kitchen import build_kitchen
 from head_chef.benchmark import _chat_score, benchmark_model, run_benchmarks
 from contextlib import redirect_stdout
@@ -57,6 +57,16 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result.executor, "analysis")
         self.assertEqual(client.calls[0][0], "chat")
         self.assertEqual(client.calls[0][3]["format_schema"], WORKER_OUTPUT_SCHEMA)
+
+    def test_chat_executor_applies_per_task_limits(self):
+        client = FakeClient()
+        job = JobCard(
+            "j", ".", "analyze", selected_model="m",
+            context_limit_tokens=16384, output_limit_tokens=4096,
+        )
+        execute_job(client, job, timeout_seconds=2)
+        self.assertEqual(client.calls[0][3]["options"]["num_ctx"], 16384)
+        self.assertEqual(client.calls[0][3]["options"]["num_predict"], 4096)
 
     def test_embedding_executor_does_not_chat(self):
         client = FakeClient()
@@ -239,6 +249,24 @@ class RunAndVerificationTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
+    def test_registry_reconciliation_detects_inventory_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "registry.json"
+            reconcile_registry(path, [
+                ModelProfile("same", digest="a"),
+                ModelProfile("gone", digest="b"),
+                ModelProfile("changed", digest="old"),
+            ])
+            changes = reconcile_registry(path, [
+                ModelProfile("same", digest="a"),
+                ModelProfile("changed", digest="new"),
+                ModelProfile("fresh", digest="c"),
+            ])
+        self.assertEqual(changes["new"], ["fresh"])
+        self.assertEqual(changes["updated"], ["changed"])
+        self.assertEqual(changes["removed"], ["gone"])
+        self.assertEqual(changes["unchanged"], ["same"])
+
     def test_owner_override_adds_and_removes_capabilities(self):
         profile = ModelProfile("m", capabilities={"analysis"}, context_tokens=1000)
         apply_overrides(profile, {
@@ -307,6 +335,10 @@ class ContractTests(unittest.TestCase):
         run = RunRecord("job", "model", "chat", 1, True, prompt="private source")
         self.assertNotIn("prompt", _public_run(run))
 
+    def test_public_job_does_not_echo_packaged_source(self):
+        job = JobCard("j", ".", "task", context_text="private source")
+        self.assertEqual(_public_job(job)["context_text"], "[stored in private job artifact]")
+
     def test_list_output_uses_contract_envelope(self):
         output = io.StringIO()
         with redirect_stdout(output):
@@ -321,6 +353,17 @@ class ContractTests(unittest.TestCase):
         ])
         self.assertEqual(args.command, "cook")
         self.assertEqual(args.acceptance, ["Return result"])
+
+    def test_cook_parser_exposes_runtime_policy(self):
+        args = build_parser().parse_args([
+            "cook", "--project", ".", "--task", "Analyze safely",
+            "--context-tokens", "16384", "--output-tokens", "4096", "--max-attempts", "3",
+        ])
+        self.assertEqual((args.context_tokens, args.output_tokens, args.max_attempts), (16384, 4096, 3))
+
+    def test_refresh_command_is_available(self):
+        args = build_parser().parse_args(["refresh"])
+        self.assertEqual(args.command, "refresh")
 
     def test_command_capture_keeps_json_contract_parseable(self):
         def command(_):

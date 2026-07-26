@@ -23,7 +23,7 @@ from .contracts import CONTRACT_VERSION
 from .executors import execute_job
 from .verification import parse_worker_output, verify_output, validate_review_status
 from .runs import RunRecord, next_attempt, save_run
-from .registry import apply_overrides, load_overrides, save_registry
+from .registry import apply_overrides, load_overrides, reconcile_registry, save_registry
 from .context_packager import package_context, render_package, split_context
 from .kitchen import build_kitchen
 from .orchestration import add_local_phase_analysis, build_sprint_plan, discover_sprint_file, load_sprint_tasks
@@ -41,6 +41,13 @@ def _json(data: Any) -> None:
 def _public_run(run: RunRecord) -> dict[str, Any]:
     value = run.to_dict()
     value.pop("prompt", None)
+    return value
+
+
+def _public_job(job) -> dict[str, Any]:
+    value = job.to_dict()
+    if value.get("context_text"):
+        value["context_text"] = "[stored in private job artifact]"
     return value
 
 
@@ -286,6 +293,40 @@ def cmd_job(args: argparse.Namespace) -> int:
         "risk": args.risk,
         "output": "json",
     }
+    requested_context = getattr(args, "context_tokens", None)
+    if requested_context is not None and requested_context < 512:
+        print("--context-tokens must be at least 512.", file=sys.stderr)
+        return 2
+    requested_output = getattr(args, "output_tokens", None)
+    if requested_output is not None and requested_output < 1:
+        print("--output-tokens must be positive.", file=sys.stderr)
+        return 2
+    if selected_profile:
+        if requested_context and requested_context > selected_profile.context_tokens:
+            print(
+                f"Requested context {requested_context} exceeds model maximum {selected_profile.context_tokens}.",
+                file=sys.stderr,
+            )
+            return 2
+        estimated = decision.budget.estimated_input_tokens if decision.budget else 0
+        minimum = estimated + (requested_output or settings.reserved_output_tokens) + settings.safety_margin_tokens
+        if requested_context and requested_context < minimum:
+            print(
+                f"Requested context {requested_context} is below safe task need {minimum}; package less context or allow splitting.",
+                file=sys.stderr,
+            )
+            return 2
+        job.context_limit_tokens = requested_context or min(
+            selected_profile.context_tokens,
+            max(settings.default_context_tokens, minimum),
+        )
+    job.output_limit_tokens = requested_output or settings.reserved_output_tokens
+    job.max_attempts = max(1, getattr(args, "max_attempts", 2))
+    job.fallback_models = [
+        candidate.model
+        for candidate in decision.candidates
+        if not candidate.rejected and candidate.model != job.selected_model
+    ][:2]
     path = save_job_card(job, state / "jobs")
     child_paths: list[str] = []
     if job.requires_split and args.allowed_file and decision.budget:
@@ -326,7 +367,7 @@ def cmd_job(args: argparse.Namespace) -> int:
         synthesis.dependencies = child_ids
         synthesis.requires_split = False
         child_paths.append(str(save_job_card(synthesis, state / "jobs")))
-    _json({"job": job.to_dict(), "path": str(path), "child_job_paths": child_paths})
+    _json({"job": _public_job(job), "path": str(path), "child_job_paths": child_paths})
     return 0 if job.selected_model else 2
 
 
@@ -466,6 +507,27 @@ def cmd_review(args: argparse.Namespace) -> int:
     from .storage import atomic_create_json
     atomic_create_json(review_path, review)
     _json({"review_path": str(review_path), "review": review})
+    return 0
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    settings, root = load_settings()
+    state = ensure_state(root, settings.state_dir)
+    try:
+        profiles = _profiles(_client(settings), settings)
+        overrides = load_overrides(state / "model-overrides.json")
+        profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
+        changes = reconcile_registry(state / "registry.json", profiles)
+        kitchen = build_kitchen(
+            [profile for profile in profiles if not profile.is_cloud],
+            benchmark_path=_evidence_path(root, settings, "benchmarks/latest.json"),
+            outcome_path=_evidence_path(root, settings, "outcomes.jsonl"),
+        )
+        atomic_write_json(state / "kitchen.json", kitchen)
+    except (OllamaError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _json({"status": "refreshed", "model_count": len(profiles), "changes": changes, "kitchen": kitchen})
     return 0
 
 
@@ -615,13 +677,52 @@ def cmd_cook(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         temperature=args.temperature,
     )
-    dispatch_code, dispatch_result = _captured_command(cmd_dispatch, dispatch_args)
+    dispatch_code = 1
+    dispatch_result = None
+    recovery: list[dict[str, Any]] = []
+    fallback_models = list(job_result["job"].get("fallback_models", []))
+    for attempt_number in range(1, max(1, args.max_attempts) + 1):
+        dispatch_code, dispatch_result = _captured_command(cmd_dispatch, dispatch_args)
+        recovery.append({
+            "attempt": attempt_number,
+            "job_id": job_result["job"]["id"],
+            "model": job_result["job"].get("selected_model"),
+            "status": "ok" if dispatch_code == 0 else "retry" if attempt_number < args.max_attempts else "failed",
+            "exit_code": dispatch_code,
+        })
+        if dispatch_code == 0:
+            break
+        if attempt_number > 1 and fallback_models:
+            fallback = fallback_models.pop(0)
+            recovery_args = argparse.Namespace(**{**vars(args), "model": fallback})
+            recovery_job_code, recovery_job = _captured_command(cmd_job, recovery_args)
+            if recovery_job_code == 0 and recovery_job and not recovery_job.get("child_job_paths"):
+                job_result = recovery_job
+                dispatch_args.job = recovery_job["path"]
+                recovery[-1]["next_model"] = fallback
+            else:
+                recovery[-1]["fallback_rejected"] = fallback
+    if len(recovery) > 1:
+        settings, root = load_settings()
+        append_jsonl(root / settings.state_dir / "recovery.jsonl", {
+            "created_at": utc_now(),
+            "job_id": job_result["job"]["id"],
+            "attempts": recovery,
+        })
     if dispatch_result:
         _json({
             "status": "completed" if dispatch_code == 0 else "verification_failed",
             "stage": "dispatch",
             "job": job_result["job"],
+            "recovery": recovery,
             **dispatch_result,
+        })
+    elif recovery:
+        _json({
+            "status": "failed",
+            "stage": "dispatch",
+            "job": job_result["job"],
+            "recovery": recovery,
         })
     return dispatch_code
 
@@ -699,6 +800,9 @@ def _add_job_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--image", action="append", default=[])
     parser.add_argument("--complexity", choices=["low", "medium", "high"], default="medium")
     parser.add_argument("--risk", choices=["low", "medium", "high"], default="low")
+    parser.add_argument("--context-tokens", type=int, help="Per-task context limit; cannot exceed model metadata.")
+    parser.add_argument("--output-tokens", type=int, help="Per-task maximum generated tokens.")
+    parser.add_argument("--max-attempts", type=int, default=2)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -718,6 +822,9 @@ def build_parser() -> argparse.ArgumentParser:
     models = sub.add_parser("models", help="List installed Ollama models.")
     models.add_argument("--json", action="store_true")
     models.set_defaults(func=cmd_models)
+
+    refresh = sub.add_parser("refresh", help="Reconcile installed Ollama models and rebuild kitchen.")
+    refresh.set_defaults(func=cmd_refresh)
 
     route_cmd = sub.add_parser("route", aliases=["plan"], help="Recommend an installed local model.")
     route_cmd.add_argument("--task", required=True)

@@ -36,6 +36,10 @@ class JobCard:
     input_images: list[str] = field(default_factory=list)
     parent_job_id: str | None = None
     dependencies: list[str] = field(default_factory=list)
+    context_limit_tokens: int | None = None
+    output_limit_tokens: int | None = None
+    max_attempts: int = 2
+    fallback_models: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

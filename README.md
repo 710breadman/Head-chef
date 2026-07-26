@@ -98,6 +98,7 @@ State and evidence are recorded
 |---|---|
 | `doctor` | Check Python-facing Ollama connectivity and local configuration. |
 | `models` | List installed models and inferred capabilities. |
+| `refresh` | Diff installed names/digests, apply overrides, and rebuild the local kitchen. |
 | `route` / `plan` | Recommend a model and explain the decision. |
 | `budget` | Estimate context usage and split pressure. |
 | `job` / `delegate` | Package approved files and create bounded job card(s). |
@@ -123,7 +124,9 @@ Cloud-tag models are excluded by default. Manual overrides cannot assign a model
 
 Installed skills seed new projects with the machine's digest-matched strength evidence. Each dispatch records metadata-only outcomes both in the project and in the private global runtime, so later projects start with improved routing without sharing prompts or responses.
 
-On first use in a project, the skill runs `orchestrate`. Structured sprint parsing remains deterministic; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` maps each task to a primary model station and useful supporting stations while preserving dependency order.
+On first use, the skill runs `refresh`, then `orchestrate`. Refresh detects new, changed, and removed Ollama models without downloading anything. Orchestration deterministically parses sprint contracts; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` preserves dependency order.
+
+`cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Every retry remains an immutable run; recovery summaries are journaled.
 
 Install optional Codex skill:
 

@@ -59,7 +59,11 @@ def execute_job(
             job.selected_model,
             messages,
             format_schema=WORKER_OUTPUT_SCHEMA,
-            options={"temperature": temperature},
+            options={
+                "temperature": temperature,
+                **({"num_ctx": job.context_limit_tokens} if job.context_limit_tokens else {}),
+                **({"num_predict": job.output_limit_tokens} if job.output_limit_tokens else {}),
+            },
             timeout_seconds=timeout_seconds,
         ),
     )

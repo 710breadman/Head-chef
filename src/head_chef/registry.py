@@ -82,3 +82,26 @@ def save_registry(path: Path, profiles: list[ModelProfile]) -> None:
         for p in profiles
     ]
     atomic_write_json(path, {"schema_version": REGISTRY_SCHEMA_VERSION, "updated_at": utc_now(), "models": entries})
+
+
+def reconcile_registry(path: Path, profiles: list[ModelProfile]) -> dict[str, Any]:
+    previous: dict[str, str] = {}
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            previous = {
+                str(item["name"]): str(item.get("digest") or "")
+                for item in raw.get("models", [])
+                if isinstance(item, dict) and item.get("name")
+            }
+        except (OSError, json.JSONDecodeError, TypeError):
+            previous = {}
+    current = {profile.name: profile.digest for profile in profiles}
+    changes = {
+        "new": sorted(current.keys() - previous.keys()),
+        "updated": sorted(name for name in current.keys() & previous.keys() if current[name] != previous[name]),
+        "removed": sorted(previous.keys() - current.keys()),
+        "unchanged": sorted(name for name in current.keys() & previous.keys() if current[name] == previous[name]),
+    }
+    save_registry(path, profiles)
+    return changes

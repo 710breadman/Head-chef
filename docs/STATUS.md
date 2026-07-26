@@ -30,10 +30,13 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Repository-independent private runtime and stable launcher installed under Codex home.
 - Machine-global digest-safe benchmark fallback; every dispatch adds metadata-only global learning evidence.
 - First-use sprint orchestration: contract discovery, source hashing, task-detail merge, dependency/actionability map, primary/supporting stations, and local phase analysis.
+- Live registry reconciliation (`refresh`) with new/updated/removed digest reporting and saved kitchen state.
+- Adaptive per-task context/output limits passed to Ollama, plus immutable `cook` retry attempts and recovery journal.
 
 ## Validation completed in the isolated build environment
 
-- 50 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 61 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- Live refresh on this host reconciled 12 installed entries, excluded the cloud tag, and rebuilt all seven local stations.
 - Installer and test script passed on current Windows host with Python 3.11; initial BOM defect in `.pth` creation was found and fixed.
 - Ollama 0.32.3 doctor passed on loopback and discovered 12 installed models.
 - One real Qwen embedding dispatch passed through `/api/embed`.

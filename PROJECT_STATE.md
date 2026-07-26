@@ -1,8 +1,8 @@
 # Project state
 
-- Goal: make first project invocation understand premade sprints, pre-assign local roles, then maximize safe local work.
+- Goal: strongest safe local coordinator: discover model changes, tune context per task, maximize local work, and recover from failures.
 - Decisions: benchmark models only in advertised strengths; local-only by default; hard capability gates; Codex retains review and application authority.
-- Changes: added `orchestrate`/`sprint-plan`: sprint discovery, referenced contract merge, hashes, dependency/actionability map, quality-first primary/supporting station assignments, and local per-phase planning analysis.
-- Tests: 57 passed, 1 Windows symlink test skipped; installed skill found 7 hashed sources, 45 tasks, 6 thinking-enabled local phase reviews, 45 unique task notes, zero analysis errors, and actionable TBWL-011 assigned to Qwen Coder plus analysis support.
+- Changes: added live `refresh` inventory reconciliation/kitchen persistence; per-task Ollama context/output limits; immutable retry/fallback jobs and recovery journal; public job source redaction; updated skill/docs.
+- Tests: 62 passed, 1 Windows symlink privilege skip; compileall and diff check passed; live 12-entry refresh passed; installed-skill Gemma e4b cook honored 8K/512 limits and returned valid structured output in 22.9s.
 - Blockers: clean-machine Windows install and privileged Windows reparse-path acceptance remain unproven; repository license needs owner selection before release.
-- Next action: final diff audit, commit/push, verify CI.
+- Next action: commit/push, verify draft PR CI; clean-machine Windows and forced-failure fallback remain acceptance gaps.
