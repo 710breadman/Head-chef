@@ -118,11 +118,11 @@ The repository began empty. Each specialist reviewed the intended Head Chef conc
 
 **Finding:** Installation must work through a copy-paste PowerShell command and a local virtual environment.
 
-**Risk:** Requiring Docker, WSL, Node, Redis, or admin privileges would undermine adoption.
+**Risk:** Requiring Docker, WSL, Node, Redis, admin privileges, or package downloads would undermine adoption.
 
-**Recommendation:** Standard-library Python, editable install, simple doctor output, and no service installation.
+**Recommendation:** Use standard-library Python, a local virtual environment, a source-path launcher, simple doctor output, and no service installation.
 
-**Rejected:** Containers and background services for v1.
+**Rejected:** Containers, background services, and download-dependent Python setup for v1.
 
 **Highest-priority action:** Verify clean Windows installation.
 
@@ -152,7 +152,7 @@ The repository began empty. Each specialist reviewed the intended Head Chef conc
 
 **Rejected:** Copying code from orchestration frameworks merely to accelerate v1.
 
-**Highest-priority action:** Owner chooses a license before a public release.
+**Highest-priority action:** Owner chooses a license before declaring v0.1 released.
 
 **Confidence:** High.
 
