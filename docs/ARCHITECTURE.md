@@ -146,3 +146,5 @@ discover JSON manifest
 ```
 
 Each assignment records status (`assigned`, `conditional`, `unfilled`, or `abstained`), scope, required inputs, score, evidence, and reason. Command-execution tasks are local-advisory because bounded workers have no shell. Owner/legal/destructive decisions have no primary local station. Deterministic policy is authoritative and repeatable; the temperature-zero local review is advisory and may still vary by runtime. Station disagreements block `work` until explicitly reviewed. The derived plan never changes project sprint state.
+
+Sprint execution uses a separate mutable `work-ledger.json`; it never rewrites source sprint contracts. The ledger records latest task outcome, immutable run ID, artifact, station, and coordinator verdict. Only source-completed or ledger-accepted tasks satisfy dependencies. Accepted dependency summaries are bounded and passed as untrusted context to downstream workers. Coordinator-pending work unlocks nothing until explicit `--accept-task`.

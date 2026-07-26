@@ -765,6 +765,58 @@ def _existing_plan_files(project: Path, values: list[Any]) -> list[str]:
     return files
 
 
+def _load_work_ledger(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"schema_version": "1.0", "tasks": {}}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or not isinstance(value.get("tasks"), dict):
+        raise ValueError("work ledger must contain a tasks object")
+    return value
+
+
+def _completed_sprint_tasks(tasks: list[dict[str, Any]], ledger: dict[str, Any]) -> set[str]:
+    completed = {
+        str(task.get("id"))
+        for task in tasks
+        if task.get("status") in {"done", "completed", "accepted"}
+    }
+    completed.update(
+        task_id
+        for task_id, record in ledger.get("tasks", {}).items()
+        if isinstance(record, dict) and record.get("status") == "accepted"
+    )
+    return completed
+
+
+def _dependency_handoff(task: dict[str, Any], ledger: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    records = ledger.get("tasks", {})
+    for dependency in task.get("dependencies") or []:
+        record = records.get(dependency)
+        if not isinstance(record, dict) or record.get("status") != "accepted":
+            continue
+        summary = record.get("result_summary")
+        run_id = record.get("run_id")
+        notes.append(
+            f"Accepted dependency {dependency}"
+            + (f" run {run_id}" if run_id else "")
+            + (f": {summary}" if summary else "")
+        )
+    return notes
+
+
+def _primary_run_from_payload(payload: object) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    run = payload.get("run")
+    if isinstance(run, dict):
+        return run
+    synthesis = payload.get("synthesis")
+    if isinstance(synthesis, dict) and isinstance(synthesis.get("run"), dict):
+        return synthesis["run"]
+    return None
+
+
 def cmd_work(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     settings, _ = load_settings(project)
@@ -782,11 +834,41 @@ def cmd_work(args: argparse.Namespace) -> int:
         print(f"Invalid sprint plan: {exc}", file=sys.stderr)
         return 2
 
+    ledger_path = state / "orchestration" / "work-ledger.json"
+    try:
+        ledger = _load_work_ledger(ledger_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"Invalid work ledger: {exc}", file=sys.stderr)
+        return 2
+    task_map = {
+        str(task.get("id")): task
+        for task in tasks
+        if isinstance(task, dict) and task.get("id")
+    }
+    for task_id in args.accept_task:
+        task = task_map.get(task_id)
+        record = ledger["tasks"].get(task_id)
+        if task is None or not isinstance(record, dict) or record.get("status") != "coordinator_review_required":
+            print(f"Cannot accept {task_id}: no coordinator-pending successful result.", file=sys.stderr)
+            return 2
+        record["status"] = "accepted"
+        record["accepted_at"] = utc_now()
+        record["accepted_by"] = "coordinator"
+    if args.accept_task:
+        ledger["updated_at"] = utc_now()
+        atomic_write_json(ledger_path, ledger)
+
+    completed = _completed_sprint_tasks(tasks, ledger)
     requested = set(args.task_id or [])
     selected = [
         task for task in tasks
         if isinstance(task, dict)
-        and task.get("actionable") is True
+        and (
+            task.get("status") in {"ready", "active", "in_progress"}
+            or (task.get("status") is None and task.get("actionable") is True)
+        )
+        and str(task.get("id")) not in completed
+        and all(str(dependency) in completed for dependency in task.get("dependencies") or [])
         and (not requested or task.get("id") in requested)
     ]
     if requested:
@@ -795,11 +877,22 @@ def cmd_work(args: argparse.Namespace) -> int:
             print(f"Tasks are missing or not dependency-ready: {', '.join(sorted(missing))}", file=sys.stderr)
             return 2
     if not selected:
+        if args.accept_task:
+            _json({
+                "status": "completed",
+                "accepted_task_ids": list(args.accept_task),
+                "ledger": str(ledger_path),
+                "next_ready_task_ids": [],
+                "task_count": 0,
+                "results": [],
+            })
+            return 0
         print("No dependency-ready sprint tasks.", file=sys.stderr)
         return 2
     if not args.all_ready and not requested:
         selected = selected[:1]
 
+    artifact = state / "orchestration" / "work-runs" / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
     results: list[dict[str, Any]] = []
     final_code = 0
     for task in selected:
@@ -873,6 +966,7 @@ def cmd_work(args: argparse.Namespace) -> int:
             context_note=[
                 f"Dependencies: {', '.join(task.get('dependencies') or []) or 'none'}",
                 f"Prior evidence: {'; '.join(task.get('evidence') or []) or 'none'}",
+                *_dependency_handoff(task, ledger),
             ],
             exclude=["No unrelated sprint work", "Do not execute commands or modify files"],
             image=list(args.image),
@@ -910,9 +1004,33 @@ def cmd_work(args: argparse.Namespace) -> int:
             item_result["support_review"] = review_payload
             item_result["support_review_exit_code"] = review_code
             final_code = max(final_code, review_code)
+        run = _primary_run_from_payload(payload)
+        result_summary = None
+        if isinstance(run, dict) and isinstance(run.get("response"), dict):
+            raw_summary = run["response"].get("result")
+            if isinstance(raw_summary, str):
+                result_summary = raw_summary[:4000]
+        successful = code == 0 and item_result.get("support_review_exit_code", 0) == 0
+        needs_review = bool(assignment.get("review_required", True))
+        ledger["tasks"][str(task.get("id"))] = {
+            "status": (
+                "accepted"
+                if successful and not needs_review
+                else "coordinator_review_required"
+                if successful
+                else "attention_required"
+            ),
+            "updated_at": utc_now(),
+            "model": model,
+            "category": category,
+            "run_id": run.get("run_id") if isinstance(run, dict) else None,
+            "work_artifact": str(artifact),
+            "result_summary": result_summary,
+            "exit_code": code,
+            "support_review_exit_code": item_result.get("support_review_exit_code"),
+        }
         results.append(item_result)
         final_code = max(final_code, code)
-    artifact = state / "orchestration" / "work-runs" / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
     atomic_write_json(artifact, {
         "contract_version": CONTRACT_VERSION,
         "schema_version": "1.0",
@@ -920,11 +1038,27 @@ def cmd_work(args: argparse.Namespace) -> int:
         "plan_path": str(plan_path),
         "results": results,
     })
+    ledger["updated_at"] = utc_now()
+    atomic_write_json(ledger_path, ledger)
+    completed_after = _completed_sprint_tasks(tasks, ledger)
+    next_ready = [
+        str(task.get("id"))
+        for task in tasks
+        if isinstance(task, dict)
+        and (
+            task.get("status") in {"ready", "active", "in_progress"}
+            or (task.get("status") is None and task.get("actionable") is True)
+        )
+        and str(task.get("id")) not in completed_after
+        and all(str(dependency) in completed_after for dependency in task.get("dependencies") or [])
+    ]
     _json({
         "status": "completed" if final_code == 0 else "attention_required",
         "artifact": str(artifact),
         "task_count": len(results),
         "results": results,
+        "ledger": str(ledger_path),
+        "next_ready_task_ids": next_ready,
     })
     return final_code
 
@@ -1382,6 +1516,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     work.add_argument("--project", default=".")
     work.add_argument("--task-id", action="append", default=[])
+    work.add_argument(
+        "--accept-task",
+        action="append",
+        default=[],
+        help="Accept a coordinator-pending successful task result and unlock dependents.",
+    )
     work.add_argument("--all-ready", action="store_true")
     work.add_argument("--image", action="append", default=[], help="Project-local input for a ready vision task.")
     work.add_argument(

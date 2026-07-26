@@ -41,10 +41,11 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Structured sprint task profiles with risk, modalities, required tools/inputs, and full/advisory/none local scope.
 - Explicit assigned/conditional/unfilled/abstained station states with routing score evidence and reasons.
 - Independent temperature-zero local station/scope review; disagreements are visible and station conflicts block dispatch.
+- Restart-safe sprint work ledger with explicit coordinator acceptance, dynamic dependency readiness, next-ready reporting, and bounded downstream handoffs.
 
 ## Validation completed in the isolated build environment
 
-- 81 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 82 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Live refresh on this host reconciled 12 installed entries, excluded the cloud tag, and rebuilt all seven local stations.
 - Live 4K forced split dispatched two children; one schema failure rerouted from Gemma e4b to Gemma 26B; synthesis then passed.
 - Live `work` on TBWL-011 used Qwen Coder, saved target-local evidence, and ran Gemma e4b as independent reviewer.

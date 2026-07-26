@@ -318,6 +318,62 @@ class SprintOrchestrationTests(unittest.TestCase):
             "Map guidance to every sprint acceptance criterion",
         ])
 
+    def test_coordinator_acceptance_unlocks_dependency_with_handoff(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = ensure_state(root)
+            plan_path = state / "orchestration" / "sprint-plan.json"
+            plan_path.parent.mkdir(parents=True)
+            assignment = {
+                "station": "coding", "model": "coder", "status": "assigned",
+                "review_required": True,
+            }
+            plan_path.write_text(json.dumps({"tasks": [
+                {
+                    "id": "T-1", "title": "First", "objective": "Implement first",
+                    "status": "ready", "actionable": True, "dependencies": [],
+                    "evidence": [], "acceptance_criteria": ["first works"],
+                    "expected_files": [], "primary_assignment": assignment,
+                },
+                {
+                    "id": "T-2", "title": "Second", "objective": "Use first",
+                    "status": "ready", "actionable": False, "dependencies": ["T-1"],
+                    "evidence": [], "acceptance_criteria": ["second works"],
+                    "expected_files": [], "primary_assignment": assignment,
+                },
+            ]}), encoding="utf-8")
+            primary_payload = {
+                "run": {
+                    "run_id": "run-one",
+                    "response": {"result": "Implemented bounded first-step proposal."},
+                },
+            }
+            first_args = build_parser().parse_args([
+                "work", "--project", str(root), "--task-id", "T-1",
+            ])
+            with patch("head_chef.cli._captured_command", return_value=(0, primary_payload)), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(cmd_work(first_args), 0)
+            ledger = json.loads(
+                (state / "orchestration" / "work-ledger.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(ledger["tasks"]["T-1"]["status"], "coordinator_review_required")
+
+            second_args = build_parser().parse_args([
+                "work", "--project", str(root), "--accept-task", "T-1",
+            ])
+            output = io.StringIO()
+            with patch("head_chef.cli._captured_command", return_value=(0, primary_payload)) as captured, \
+                 redirect_stdout(output):
+                self.assertEqual(cmd_work(second_args), 0)
+            cook_args = captured.call_args.args[1]
+            payload = json.loads(output.getvalue())
+        self.assertTrue(any(
+            note.startswith("Accepted dependency T-1 run run-one")
+            for note in cook_args.context_note
+        ))
+        self.assertEqual(payload["results"][0]["task_id"], "T-2")
+
     def test_plan_files_reject_escape_and_directories(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

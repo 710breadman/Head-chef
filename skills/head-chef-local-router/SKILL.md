@@ -34,12 +34,13 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 4. If no sprint contract exists, report that fact, run `& $HeadChef kitchen`, and continue with a user-defined bounded task. Never invent a sprint file without permission.
 5. Read only actionable plan entries and local phase notes. Respect dependency order. Inspect assignment status: run `assigned`; supply missing input for `conditional`; keep `unfilled` with Codex; never dispatch `abstained`. `work` stops on deterministic/local station disagreement; use `--accept-assignment-review` only after Codex reviews it.
 6. Run `& $HeadChef work --project "C:\Projects\App"` for the first ready assigned task. Use `--all-ready` only when tasks are independently actionable.
-7. Give the primary station most implementation work. Use supporting stations when useful: planning for decomposition, retrieval for supplied-source lookup, writing for prose, vision for actual captures, and analysis for independent review.
-8. Prefer quality over speed. Do not use `--prefer-speed`. Codex should mainly enforce rules, package context, tune parameters, review evidence, run authoritative tests, and apply or reject changes.
-9. Stop and tell the user to run `scripts\Install-CodexSkill.ps1` from the Head Chef repository if the launcher reports that installation is missing.
-10. Keep work with Codex when no station exists, routing abstains, context cannot be packaged safely, or task needs architecture, migration, security, licensing, destructive, or public-interface authority.
-11. Define narrow task, explicit project root, allowed files, forbidden files, acceptance criteria, tests, and exclusions.
-12. Use one command. Set `--context-tokens`, `--output-tokens`, and `--max-attempts` when task needs differ from safe defaults:
+7. Review coordinator-pending evidence. When accepted, run `& $HeadChef work --project "C:\Projects\App" --accept-task TASK-ID`; this unlocks dependencies and passes a bounded accepted-result handoff. Never accept merely to advance the graph.
+8. Give the primary station most implementation work. Use supporting stations when useful: planning for decomposition, retrieval for supplied-source lookup, writing for prose, vision for actual captures, and analysis for independent review.
+9. Prefer quality over speed. Do not use `--prefer-speed`. Codex should mainly enforce rules, package context, tune parameters, review evidence, run authoritative tests, and apply or reject changes.
+10. Stop and tell the user to run `scripts\Install-CodexSkill.ps1` from the Head Chef repository if the launcher reports that installation is missing.
+11. Keep work with Codex when no station exists, routing abstains, context cannot be packaged safely, or task needs architecture, migration, security, licensing, destructive, or public-interface authority.
+12. Define narrow task, explicit project root, allowed files, forbidden files, acceptance criteria, tests, and exclusions.
+13. Use one command. Set `--context-tokens`, `--output-tokens`, and `--max-attempts` when task needs differ from safe defaults:
 
 ```powershell
 & $HeadChef cook `
@@ -54,11 +55,11 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
   --test "python -m unittest tests.test_config"
 ```
 
-13. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
-14. `cook` automatically dispatches split child jobs, then creates a new synthesis job containing their immutable schema-validated evidence. Use `--no-auto-split` only when Codex must manually gate child order.
-15. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
-16. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `& $HeadChef review`.
-17. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.
+14. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
+15. `cook` automatically dispatches split child jobs, then creates a new synthesis job containing their immutable schema-validated evidence. Use `--no-auto-split` only when Codex must manually gate child order.
+16. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
+17. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `& $HeadChef review`.
+18. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.
 
 ## Routing rules
 

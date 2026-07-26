@@ -135,7 +135,7 @@ Supplied project context is always untrusted data. A schema-valid worker respons
 
 `cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Lower limits drive safe file-boundary splitting. By default, child jobs run locally and a new synthesis job receives their immutable schema-validated evidence. Use `--no-auto-split` only for manual orchestration. Every retry remains immutable.
 
-After `orchestrate`, run `head-chef work --project "C:\Projects\App"` for the first dependency-ready task, or add `--all-ready` for every currently independent ready task. Head Chef packages only existing regular files named by the sprint contract. Local workers propose results; Codex still reviews and applies changes.
+After `orchestrate`, run `head-chef work --project "C:\Projects\App"` for the first dependency-ready task, or add `--all-ready` for every currently independent ready task. Progress survives restarts in `.head-chef/orchestration/work-ledger.json`. Successful coding/planning work remains coordinator-pending. After review, `head-chef work --project "C:\Projects\App" --accept-task TASK-ID` records the verdict, unlocks dependents, and supplies a bounded accepted-result handoff to the next worker. Output lists `next_ready_task_ids`. Head Chef packages only existing regular files named by the sprint contract; Codex still reviews and applies changes.
 
 Install optional Codex skill:
 
