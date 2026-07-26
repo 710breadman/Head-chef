@@ -26,12 +26,14 @@ class JobCardTests(unittest.TestCase):
             acceptance_criteria=["Bad JSON returns an error"],
             context_text="def load_settings(): pass",
         )
+        job.model_digest = "digest-1"
         with tempfile.TemporaryDirectory() as temp:
             path = save_job_card(job, Path(temp))
             loaded = load_job_card(path)
         self.assertEqual(loaded.task, job.task)
         self.assertEqual(loaded.allowed_files, ["src/config.py"])
         self.assertIn("load_settings", loaded.context_text)
+        self.assertEqual(loaded.model_digest, "digest-1")
 
     def test_prompt_contains_safety_boundary(self):
         decision = RouteDecision(
@@ -47,6 +49,8 @@ class JobCardTests(unittest.TestCase):
         prompt = render_worker_prompt(create_job_card("x", "Review", decision))
         self.assertIn("Do not claim commands or tests were run", prompt)
         self.assertIn("RISKS, VERIFICATION NEEDED, and BLOCKERS", prompt)
+        self.assertIn("Copy every acceptance criterion verbatim", prompt)
+        self.assertIn("Use blockers only for conditions that prevent completion", prompt)
 
 
 if __name__ == "__main__":

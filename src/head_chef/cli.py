@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 from dataclasses import asdict
+import io
 import json
 from pathlib import Path
 import platform
@@ -9,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from .benchmark import run_benchmarks
+from .benchmark import STRENGTH_CASES, run_benchmarks
 from .config import Settings, load_settings, write_default_config
 from .jobs import create_job_card, load_job_card, render_worker_prompt, save_job_card
 from .models import ModelProfile, profile_from_ollama
@@ -31,7 +33,13 @@ def _json(data: Any) -> None:
         data = {"contract_version": CONTRACT_VERSION, "data": data}
     elif "contract_version" not in data:
         data = {"contract_version": CONTRACT_VERSION, **data}
-    print(json.dumps(data, indent=2, ensure_ascii=False))
+    print(json.dumps(data, indent=2, ensure_ascii=True))
+
+
+def _public_run(run: RunRecord) -> dict[str, Any]:
+    value = run.to_dict()
+    value.pop("prompt", None)
+    return value
 
 
 def _client(settings: Settings) -> OllamaClient:
@@ -141,7 +149,7 @@ def _decision(args: argparse.Namespace, profiles: list[ModelProfile], settings: 
         RouteRequest(
             task=args.task,
             context_text=context,
-            required_capability=getattr(args, "category", None),
+            required_capability=getattr(args, "category", None) or ("vision" if getattr(args, "image", None) else None),
             manual_model=getattr(args, "model", None),
             prefer_quality=not getattr(args, "prefer_speed", False),
         ),
@@ -234,6 +242,8 @@ def cmd_job(args: argparse.Namespace) -> int:
         exclusions=args.exclude,
     )
     job.input_images = args.image
+    selected_profile = next((profile for profile in profiles if profile.name == job.selected_model), None)
+    job.model_digest = selected_profile.digest if selected_profile else ""
     job.task_profile = {
         "task_type": decision.category,
         "modalities": ["image", "text"] if args.image else ["text"],
@@ -265,6 +275,7 @@ def cmd_job(args: argparse.Namespace) -> int:
                 exclusions=args.exclude,
             )
             child.parent_job_id = job.id
+            child.model_digest = job.model_digest
             child.requires_split = False
             child_ids.append(child.id)
             child_paths.append(str(save_job_card(child, state / "jobs")))
@@ -276,6 +287,7 @@ def cmd_job(args: argparse.Namespace) -> int:
             exclusions=["Do not add claims absent from child results"],
         )
         synthesis.parent_job_id = job.id
+        synthesis.model_digest = job.model_digest
         synthesis.dependencies = child_ids
         synthesis.requires_split = False
         child_paths.append(str(save_job_card(synthesis, state / "jobs")))
@@ -311,6 +323,16 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     attempt = next_attempt(state / "runs", job.id)
     started = time.perf_counter()
     try:
+        current_profile = next(
+            (profile for profile in _profiles(client, settings) if profile.name == job.selected_model),
+            None,
+        )
+        if current_profile is None:
+            raise ValueError(f"Selected model is no longer installed: {job.selected_model}")
+        if job.model_digest and current_profile.digest != job.model_digest:
+            raise ValueError(
+                f"Model digest changed for {job.selected_model}; reroute job before dispatch."
+            )
         execution = execute_job(
             client, job,
             temperature=args.temperature,
@@ -320,13 +342,14 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     except (OllamaError, ValueError) as exc:
         failed = RunRecord(
             job.id, job.selected_model, job.category, attempt, False,
-            prompt=prompt, error=str(exc),
+            model_digest=job.model_digest, prompt=prompt, error=str(exc),
         )
         failed_path = save_run(failed, state / "runs")
         append_jsonl(
             state / "outcomes.jsonl",
             {
                 "created_at": utc_now(), "job_id": job.id, "model": job.selected_model,
+                "model_digest": job.model_digest,
                 "category": job.category, "ok": False,
                 "elapsed_seconds": round(time.perf_counter() - started, 3),
                 "reason": type(exc).__name__,
@@ -357,7 +380,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     )
     run = RunRecord(
         job.id, job.selected_model, execution.executor, attempt, not errors,
-        prompt=prompt,
+        model_digest=job.model_digest, prompt=prompt,
         response=parsed if parsed is not None else response.content,
         validation_errors=errors,
         metrics={
@@ -376,11 +399,12 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         {
             "created_at": utc_now(), "job_id": job.id, "run_id": run.run_id,
             "model": job.selected_model, "category": job.category, "ok": not errors,
+            "model_digest": job.model_digest,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "review_status": verification.status,
         },
     )
-    _json({"run_path": str(run_path), "run": run.to_dict(), "verification": verification.to_dict()})
+    _json({"run_path": str(run_path), "run": _public_run(run), "verification": verification.to_dict()})
     return 0 if not errors else 4
 
 
@@ -459,6 +483,47 @@ def cmd_kitchen(args: argparse.Namespace) -> int:
     return 0
 
 
+def _captured_command(function, args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = int(function(args))
+    text = output.getvalue().strip()
+    return code, json.loads(text) if text else None
+
+
+def cmd_cook(args: argparse.Namespace) -> int:
+    job_code, job_result = _captured_command(cmd_job, args)
+    if job_code != 0 or not job_result:
+        if job_result:
+            _json({"stage": "job", **job_result})
+        return job_code
+    child_paths = job_result.get("child_job_paths", [])
+    if child_paths:
+        _json({
+            "status": "split",
+            "stage": "job",
+            "job": job_result["job"],
+            "job_path": job_result["path"],
+            "child_job_paths": child_paths,
+            "next_action": "Dispatch independent child jobs, then synthesis job after dependencies complete.",
+        })
+        return 3
+    dispatch_args = argparse.Namespace(
+        job=job_result["path"],
+        timeout=args.timeout,
+        temperature=args.temperature,
+    )
+    dispatch_code, dispatch_result = _captured_command(cmd_dispatch, dispatch_args)
+    if dispatch_result:
+        _json({
+            "status": "completed" if dispatch_code == 0 else "verification_failed",
+            "stage": "dispatch",
+            "job": job_result["job"],
+            **dispatch_result,
+        })
+    return dispatch_code
+
+
 def cmd_benchmark(args: argparse.Namespace) -> int:
     settings, root = load_settings()
     state = ensure_state(root, settings.state_dir)
@@ -469,22 +534,69 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    profiles = [profile for profile in profiles if not profile.is_cloud]
     requested = set(args.model or [])
-    selected = [profile for profile in profiles if not profile.is_embedding_only and (not requested or profile.name in requested)]
-    if not requested:
-        selected = selected[: settings.max_benchmark_models]
+    categories = set(args.station or STRENGTH_CASES)
+    if requested:
+        selected = [profile for profile in profiles if profile.name in requested]
+        assignments = None
+    else:
+        kitchen = build_kitchen(
+            profiles,
+            benchmark_path=state / "benchmarks" / "latest.json",
+            outcome_path=state / "outcomes.jsonl",
+        )
+        assigned_names = {
+            station["model"]
+            for name, station in kitchen["stations"].items()
+            if name in categories and station["model"]
+        }
+        selected = [profile for profile in profiles if profile.name in assigned_names]
+        assignments: dict[str, set[str]] = {}
+        for category, station in kitchen["stations"].items():
+            if category in categories and station["model"]:
+                assignments.setdefault(station["model"], set()).add(category)
     missing = requested - {profile.name for profile in selected}
     if missing:
-        print(f"Requested models not installed or not generative: {', '.join(sorted(missing))}", file=sys.stderr)
+        print(f"Requested local models not installed: {', '.join(sorted(missing))}", file=sys.stderr)
         return 2
     if not selected:
-        print("No generative models available to benchmark.", file=sys.stderr)
+        print("No local station models available to benchmark.", file=sys.stderr)
         return 2
 
+    vision_image = Path(args.image).resolve() if args.image else None
+    if "vision" in categories and vision_image is None:
+        print("Vision benchmark requires --image; other requested stations will still run.", file=sys.stderr)
     output = state / "benchmarks" / "latest.json"
-    result = run_benchmarks(client, selected, output, args.timeout or settings.request_timeout_seconds)
+    result = run_benchmarks(
+        client,
+        selected,
+        output,
+        args.timeout or settings.request_timeout_seconds,
+        categories=categories,
+        vision_image=vision_image,
+        assignments=assignments,
+    )
     _json({"path": str(output), **result})
     return 0
+
+
+def _add_job_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--task", required=True)
+    parser.add_argument("--context-file", help="Explicit text file to store in job and send to local worker.")
+    parser.add_argument("--category", choices=["analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding"])
+    parser.add_argument("--model")
+    parser.add_argument("--prefer-speed", action="store_true")
+    parser.add_argument("--allowed-file", action="append", default=[])
+    parser.add_argument("--forbidden-file", action="append", default=[])
+    parser.add_argument("--acceptance", action="append", default=[])
+    parser.add_argument("--test", action="append", default=[])
+    parser.add_argument("--context-note", action="append", default=[])
+    parser.add_argument("--exclude", action="append", default=[])
+    parser.add_argument("--image", action="append", default=[])
+    parser.add_argument("--complexity", choices=["low", "medium", "high"], default="medium")
+    parser.add_argument("--risk", choices=["low", "medium", "high"], default="low")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -520,22 +632,14 @@ def build_parser() -> argparse.ArgumentParser:
     budget.set_defaults(func=cmd_budget)
 
     job = sub.add_parser("job", aliases=["delegate"], help="Create a bounded local-worker job card.")
-    job.add_argument("--project", required=True)
-    job.add_argument("--task", required=True)
-    job.add_argument("--context-file", help="Explicit text file to store in the job and send to the local worker.")
-    job.add_argument("--category", choices=["analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding"])
-    job.add_argument("--model")
-    job.add_argument("--prefer-speed", action="store_true")
-    job.add_argument("--allowed-file", action="append", default=[])
-    job.add_argument("--forbidden-file", action="append", default=[])
-    job.add_argument("--acceptance", action="append", default=[])
-    job.add_argument("--test", action="append", default=[])
-    job.add_argument("--context-note", action="append", default=[])
-    job.add_argument("--exclude", action="append", default=[])
-    job.add_argument("--image", action="append", default=[])
-    job.add_argument("--complexity", choices=["low", "medium", "high"], default="medium")
-    job.add_argument("--risk", choices=["low", "medium", "high"], default="low")
+    _add_job_arguments(job)
     job.set_defaults(func=cmd_job)
+
+    cook = sub.add_parser("cook", help="Route, package, dispatch, validate, and record one local task.")
+    _add_job_arguments(cook)
+    cook.add_argument("--timeout", type=int)
+    cook.add_argument("--temperature", type=float, default=0.1)
+    cook.set_defaults(func=cmd_cook)
 
     dispatch = sub.add_parser("dispatch", help="Send one saved job card to its selected Ollama model.")
     dispatch.add_argument("--job", required=True)
@@ -543,8 +647,10 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--temperature", type=float, default=0.1)
     dispatch.set_defaults(func=cmd_dispatch)
 
-    benchmark = sub.add_parser("benchmark", help="Run a tiny benchmark on installed generative models.")
+    benchmark = sub.add_parser("benchmark", help="Run strength-specific evals on assigned local stations.")
     benchmark.add_argument("--model", action="append", default=[])
+    benchmark.add_argument("--station", action="append", choices=sorted(STRENGTH_CASES), default=[])
+    benchmark.add_argument("--image", help="Project-local fixture for vision station.")
     benchmark.add_argument("--timeout", type=int)
     benchmark.set_defaults(func=cmd_benchmark)
 

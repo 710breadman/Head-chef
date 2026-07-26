@@ -14,7 +14,8 @@ TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "vision": ("image", "screenshot", "photo", "ocr", "visual", "panel", "diagram"),
     "coding": ("code", "bug", "function", "class", "test", "refactor", "script", "python", "powershell"),
     "planning": ("roadmap", "sprint", "architecture", "plan", "design", "decompose", "requirements"),
-    "retrieval": ("search", "retrieve", "rank", "match", "embedding", "similarity", "index"),
+    "embedding": ("embed", "embedding", "vectorize", "vector representation"),
+    "retrieval": ("search", "retrieve", "rank", "match", "similarity", "index"),
     "writing": ("rewrite", "story", "draft", "prose", "chapter", "edit", "tone"),
 }
 
@@ -81,7 +82,7 @@ def classify_task(task: str, forced: str | None = None) -> str:
     return best if scores[best] > 0 else "analysis"
 
 
-def _load_benchmark_scores(path: Path | None) -> dict[str, float]:
+def _load_benchmark_scores(path: Path | None, category: str) -> dict[tuple[str, str], tuple[float, float]]:
     if not path or not path.exists():
         return {}
     try:
@@ -89,21 +90,31 @@ def _load_benchmark_scores(path: Path | None) -> dict[str, float]:
     except (OSError, json.JSONDecodeError):
         return {}
 
-    scores: dict[str, float] = {}
+    scores: dict[tuple[str, str], tuple[float, float]] = {}
+    current_suite = data.get("benchmark")
     for item in data.get("results", []):
         if not isinstance(item, dict):
             continue
         model = item.get("model")
+        digest = item.get("model_digest")
         score = item.get("score")
-        if isinstance(model, str) and isinstance(score, (int, float)):
-            scores[model] = float(score)
+        if (
+            item.get("category") == category
+            and item.get("ok") is True
+            and item.get("suite_version") == current_suite
+            and isinstance(model, str)
+            and isinstance(digest, str)
+            and digest
+            and isinstance(score, (int, float))
+        ):
+            scores[(model, digest)] = (float(score), float(item.get("elapsed_seconds") or 0))
     return scores
 
 
-def _load_outcomes(path: Path | None, category: str) -> dict[str, tuple[float, float]]:
+def _load_outcomes(path: Path | None, category: str) -> dict[tuple[str, str], tuple[float, float]]:
     if not path or not path.exists():
         return {}
-    grouped: dict[str, list[tuple[bool, float]]] = {}
+    grouped: dict[tuple[str, str], list[tuple[bool, float]]] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -113,17 +124,22 @@ def _load_outcomes(path: Path | None, category: str) -> dict[str, tuple[float, f
             item = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if item.get("category") != category or not isinstance(item.get("model"), str):
+        if (
+            item.get("category") != category
+            or not isinstance(item.get("model"), str)
+            or not isinstance(item.get("model_digest"), str)
+            or not item.get("model_digest")
+        ):
             continue
-        grouped.setdefault(item["model"], []).append(
+        grouped.setdefault((item["model"], item["model_digest"]), []).append(
             (bool(item.get("ok")), float(item.get("elapsed_seconds") or 0))
         )
     return {
-        model: (
+        identity: (
             sum(1 for ok, _ in values if ok) / len(values),
             sum(seconds for _, seconds in values) / len(values),
         )
-        for model, values in grouped.items()
+        for identity, values in grouped.items()
     }
 
 
@@ -138,7 +154,7 @@ def route(
 ) -> RouteDecision:
     profiles = list(profiles)
     category = classify_task(request.task, request.required_capability)
-    benchmark_scores = _load_benchmark_scores(benchmark_path)
+    benchmark_scores = _load_benchmark_scores(benchmark_path, category)
     outcomes = _load_outcomes(outcome_path, category)
 
     if request.manual_model:
@@ -201,6 +217,7 @@ def route(
     for profile in profiles:
         reasons: list[str] = []
         score = 0.0
+        benchmark_evidence = benchmark_scores.get((profile.name, profile.digest))
         if profile.is_cloud and not request.allow_cloud:
             candidates.append(CandidateScore(profile.name, -100.0, ["cloud-backed model excluded"], True))
             continue
@@ -222,7 +239,7 @@ def route(
             score -= 22
             reasons.append(f"no strong {category} signal")
 
-        if request.prefer_quality:
+        if request.prefer_quality and benchmark_evidence is None:
             quality_bonus = min(8.0, profile.parameter_billions / 4)
             score += quality_bonus
             if quality_bonus:
@@ -244,25 +261,36 @@ def route(
         if category == "writing" and "writing-specialist" in profile.notes:
             score += 25
             reasons.append("writing specialist")
-        if category in {"analysis", "planning", "writing"} and profile.parameter_billions >= 20:
+        if (
+            benchmark_evidence is None
+            and category in {"analysis", "planning", "writing"}
+            and profile.parameter_billions >= 20
+        ):
             score += 8
             reasons.append("large general model")
         if profile.context_tokens >= 32768:
             score += 6
             reasons.append("large context metadata")
 
-        benchmark = benchmark_scores.get(profile.name)
-        benchmark = profile.benchmark_scores.get(category, benchmark)
-        if benchmark is not None:
-            bonus = max(-10.0, min(10.0, benchmark - 50.0))
+        profile_benchmark = profile.benchmark_scores.get(category)
+        if benchmark_evidence is not None:
+            benchmark, elapsed_seconds = benchmark_evidence
+            bonus = max(-20.0, min(20.0, benchmark - 80.0))
+            latency_penalty = min(12.0, elapsed_seconds / 2)
+            score += bonus - latency_penalty
+            reasons.append(f"local strength score adjustment {bonus:+.1f}")
+            reasons.append(f"strength latency penalty -{latency_penalty:.1f}")
+        elif profile_benchmark is not None:
+            bonus = max(-20.0, min(20.0, profile_benchmark - 80.0))
             score += bonus
-            reasons.append(f"local benchmark adjustment {bonus:+.1f}")
+            reasons.append(f"local strength score adjustment {bonus:+.1f}")
         reliability_bonus = (profile.reliability - 0.5) * 20
         score += reliability_bonus
         if reliability_bonus:
             reasons.append(f"reliability adjustment {reliability_bonus:+.1f}")
-        if profile.name in outcomes:
-            success_rate, average_seconds = outcomes[profile.name]
+        identity = (profile.name, profile.digest)
+        if identity in outcomes:
+            success_rate, average_seconds = outcomes[identity]
             outcome_bonus = (success_rate - 0.5) * 30
             latency_penalty = min(20.0, average_seconds / 10)
             score += outcome_bonus - latency_penalty

@@ -18,6 +18,7 @@ class JobCard:
     task: str
     status: str = "ready"
     selected_model: str | None = None
+    model_digest: str = ""
     category: str = "analysis"
     created_at: str = field(default_factory=utc_now)
     allowed_files: list[str] = field(default_factory=list)
@@ -148,6 +149,8 @@ RULES
 - Do not claim to have read files that were not supplied.
 - Do not claim commands or tests were run.
 - State assumptions and uncertainties.
+- Copy every acceptance criterion verbatim into acceptance_check and attach concrete evidence.
+- Use blockers only for conditions that prevent completion; put ordinary uncertainty in risks.
 - Stay inside the exact task.
 - Return a concise proposed solution, patch guidance, analysis, or draft suitable for coordinator review.
 - End with: RISKS, VERIFICATION NEEDED, and BLOCKERS.

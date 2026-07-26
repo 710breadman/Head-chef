@@ -74,6 +74,7 @@ class OllamaClient:
         *,
         format_schema: dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
+        think: bool | None = None,
         timeout_seconds: int | None = None,
     ) -> OllamaResponse:
         encoded_messages: list[dict[str, Any]] = []
@@ -94,6 +95,8 @@ class OllamaClient:
             payload["format"] = format_schema
         if options:
             payload["options"] = options
+        if think is not None:
+            payload["think"] = think
 
         raw = self._request("POST", "/api/chat", payload, timeout_seconds)
         message = raw.get("message", {})

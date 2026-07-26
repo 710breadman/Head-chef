@@ -16,6 +16,7 @@ class RunRecord:
     executor: str
     attempt_number: int
     ok: bool
+    model_digest: str = ""
     run_id: str = field(default_factory=lambda: f"run-{secrets.token_hex(8)}")
     schema_version: str = SCHEMA_VERSION
     created_at: str = field(default_factory=utc_now)

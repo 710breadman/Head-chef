@@ -1,0 +1,4 @@
+interface:
+  display_name: "Head Chef Local Router"
+  short_description: "Route bounded Codex tasks through local Ollama specialists"
+  default_prompt: "Use $head-chef-local-router to route this bounded task through a validated local specialist, then verify it."

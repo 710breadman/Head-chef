@@ -42,6 +42,9 @@ class RouterTests(unittest.TestCase):
     def test_classifies_coding(self):
         self.assertEqual(classify_task("Fix this Python function and add a test"), "coding")
 
+    def test_classifies_embedding_separately_from_retrieval(self):
+        self.assertEqual(classify_task("Create embeddings for these records"), "embedding")
+
     def test_routes_code_to_coder(self):
         decision = route(RouteRequest(task="Fix a Python bug"), self.models)
         self.assertEqual(decision.selected_model, "qwen2.5-coder:7b")

@@ -32,6 +32,19 @@ def find_project_root(start: Path | None = None) -> Path:
     return current
 
 
+def resolve_state_dir(root: Path, state_dir: str) -> Path:
+    root = root.resolve()
+    state_path = Path(state_dir)
+    if state_path.is_absolute() or ".." in state_path.parts:
+        raise ValueError("state_dir must be a project-relative path without '..'")
+    resolved_state = (root / state_path).resolve()
+    try:
+        resolved_state.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("state_dir escapes project root") from exc
+    return resolved_state
+
+
 def load_settings(start: Path | None = None) -> tuple[Settings, Path]:
     root = find_project_root(start)
     settings = Settings()
@@ -48,21 +61,14 @@ def load_settings(start: Path | None = None) -> tuple[Settings, Path]:
     if env_url:
         settings.ollama_url = env_url.rstrip("/")
 
-    state_path = Path(settings.state_dir)
-    if state_path.is_absolute() or ".." in state_path.parts:
-        raise ValueError("state_dir must be a project-relative path without '..'")
-    resolved_state = (root / state_path).resolve()
-    try:
-        resolved_state.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("state_dir escapes project root") from exc
+    resolve_state_dir(root, settings.state_dir)
 
     return settings, root
 
 
 def write_default_config(root: Path, settings: Settings | None = None) -> Path:
     settings = settings or Settings()
-    state_dir = root / settings.state_dir
+    state_dir = resolve_state_dir(root, settings.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "config.json"
     if not path.exists():

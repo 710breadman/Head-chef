@@ -2,7 +2,7 @@
 
 ## Current state
 
-Head Chef v0.2 core is implemented on draft PR branch. Release remains provisional pending owner hardware acceptance.
+Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 
 ## Implemented
 
@@ -24,10 +24,13 @@ Head Chef v0.2 core is implemented on draft PR branch. Release remains provision
 - Immutable success/failure attempts with unique run IDs and attempt numbers.
 - Approved-file context manifests, hashes, secret/binary/traversal rejection, dedupe, child/synthesis splitting.
 - Task-specific benchmark cases and Codex aliases: plan, delegate, review, checkpoint, resume.
+- One-command `cook` workflow and installable `head-chef-local-router` Codex skill.
+- Digest-bound strength evidence and outcomes; changed tags cannot inherit old evidence.
+- Immutable, category-specific benchmark attempts and evidence-based station assignment.
 
 ## Validation completed in the isolated build environment
 
-- 33 deterministic unit tests passed during v0.2 implementation.
+- 48 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Installer and test script passed on current Windows host with Python 3.11; initial BOM defect in `.pth` creation was found and fixed.
 - Ollama 0.32.3 doctor passed on loopback and discovered 12 installed models.
 - One real Qwen embedding dispatch passed through `/api/embed`.
@@ -39,14 +42,14 @@ Head Chef v0.2 core is implemented on draft PR branch. Release remains provision
 - Gemma 12B retrieval timed out at 180 seconds; immutable failure evidence preserved. Category outcomes now penalize failure and latency.
 - Python source and tests passed `compileall`.
 - CLI help and the standalone budget command ran successfully.
+- Strength suite `hc-strengths-v3.2` passed all assigned stations: coding, vision, embedding, planning, writing, retrieval, and analysis.
+- Planning comparison selected Gemma e4b (100, 14.4s) over Gemma 26B (94, 32.4s); Qwen Coder failed that planning contract.
+- `cook` auto-routing exercised all seven categories and selected the intended station.
+- Codex skill structure passed validation and a forward-use review.
 
 ## Not yet proven
 
 - Clean Windows installation.
-- Live connection to the owner’s Ollama instance.
-- Correct metadata for every installed model.
-- Clean target-quality benchmark suite for every assigned station.
-- Benchmark behavior on the owner’s hardware.
 - CLI usability for a nontechnical user.
 - Clean Windows installation on a fresh machine. Current-host rerun is not a clean-install claim.
 
@@ -67,8 +70,8 @@ Save output, registry, one chat run, one vision run, and one embedding run. Do n
 ## Blockers
 
 - Repository license requires owner selection before a public release.
-- Live Ollama and clean-Windows acceptance cannot be completed in the current isolated build environment.
+- Clean-machine Windows acceptance and privileged reparse-path tests remain external acceptance work.
 
 ## Release status
 
-**v0.2 pre-alpha / provisional.** No live Ollama, GPU, model-quality, or clean-Windows validation claimed.
+**v0.2 release candidate / provisional.** Live Ollama validation is claimed only for this host and the recorded strength probes. No clean-machine Windows claim is made.

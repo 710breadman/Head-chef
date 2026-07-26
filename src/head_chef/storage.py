@@ -16,7 +16,9 @@ def compact_timestamp() -> str:
 
 
 def ensure_state(root: Path, state_dir_name: str = ".head-chef") -> Path:
-    state = root / state_dir_name
+    from .config import resolve_state_dir
+
+    state = resolve_state_dir(root, state_dir_name)
     for child in ("jobs", "runs", "benchmarks"):
         (state / child).mkdir(parents=True, exist_ok=True)
     blockers = state / "blockers.md"

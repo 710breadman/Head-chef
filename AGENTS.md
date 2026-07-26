@@ -21,6 +21,11 @@ Use Head Chef only when a local model can reduce paid usage without increasing r
 - Do not let a local model make architecture, migration, licensing, security, or destructive-action decisions silently.
 - Validate all local-model output before applying it.
 - Do not silently substitute a different model.
+- Run `head-chef kitchen` before delegation when station state may have changed.
+- Prefer one-command `head-chef cook` for bounded tasks.
+- Route only through advertised station capabilities; cloud-tag models remain excluded.
+- Treat exit 3 as a split plan, not completed work.
+- Inspect validation and review status before using output.
 
 ## Blockers
 

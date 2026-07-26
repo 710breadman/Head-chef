@@ -49,9 +49,11 @@ The following changes require a dedicated security review:
 # v0.2 controls
 
 - Context packager reads only explicit project-relative files; rejects traversal, binary/NUL, non-UTF-8, duplicate content, known secret markers, and size overflow.
+- Every state writer resolves and contains `.head-chef` inside the project root; absolute, traversal, and resolved symlink escapes fail closed.
 - Vision images must remain inside project root and use approved formats.
 - Local workers receive no shell or filesystem tools.
 - Worker JSON is untrusted until schema validation and coordinator review.
 - Manual model override never overrides policy.
 - Run attempts use create-exclusive immutable files; coordinator verdicts are separate append-only artifacts.
 - Remote Ollama remains outside validated deployment scope. Use loopback unless data-egress risk is explicitly accepted.
+- Oversized work cannot bypass splitting. Public command output omits the packaged prompt; immutable local audit evidence retains it.

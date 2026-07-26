@@ -1,22 +1,26 @@
+import argparse
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from head_chef.context_packager import package_context, render_package, split_context
+from head_chef.config import Settings, resolve_state_dir, write_default_config
 from head_chef.contracts import WORKER_OUTPUT_SCHEMA
 from head_chef.executors import execute_job
 from head_chef.jobs import JobCard
 from head_chef.models import ModelProfile
 from head_chef.models import infer_capabilities
-from head_chef.ollama import OllamaResponse
+from head_chef.ollama import OllamaClient, OllamaResponse
 from head_chef.registry import apply_overrides
-from head_chef.cli import _json
+from head_chef.cli import _captured_command, _json, _public_run, build_parser
 from head_chef.kitchen import build_kitchen
+from head_chef.benchmark import _chat_score, benchmark_model, run_benchmarks
 from contextlib import redirect_stdout
 import io
 from head_chef.router import RouteRequest, route
 from head_chef.runs import RunRecord, next_attempt, save_run
+from head_chef.storage import ensure_state
 from head_chef.verification import parse_worker_output, verify_output
 
 
@@ -63,6 +67,16 @@ class ExecutorTests(unittest.TestCase):
     def test_vision_requires_image(self):
         with self.assertRaisesRegex(ValueError, "requires at least one"):
             execute_job(FakeClient(), JobCard("j", ".", "inspect", selected_model="v", category="vision"), timeout_seconds=2)
+
+    def test_ollama_thinking_can_be_disabled_for_deterministic_eval(self):
+        class CaptureClient(OllamaClient):
+            def _request(self, method, path, payload=None, timeout_seconds=None):
+                self.payload = payload
+                return {"message": {"content": "{}"}}
+
+        client = CaptureClient("http://127.0.0.1:11434")
+        client.chat("m", [{"role": "user", "content": "x"}], think=False)
+        self.assertIs(client.payload["think"], False)
 
 
 class PolicyTests(unittest.TestCase):
@@ -115,6 +129,31 @@ class ContextTests(unittest.TestCase):
             (root / "b").write_text("b" * 5, encoding="utf-8")
             chunks = split_context(package_context(root, ["a", "b"]), 6)
             self.assertEqual([[x.path for x in chunk] for chunk in chunks], [["a"], ["b"]])
+
+    def test_every_state_writer_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for operation in (
+                lambda: resolve_state_dir(root, "../outside"),
+                lambda: write_default_config(root, Settings(state_dir="../outside")),
+                lambda: ensure_state(root, "../outside"),
+            ):
+                with self.assertRaises(ValueError):
+                    operation()
+
+    def test_state_symlink_cannot_escape_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "project"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            try:
+                (root / "linked").symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                resolve_state_dir(root, "linked/state")
 
 
 class RunAndVerificationTests(unittest.TestCase):
@@ -177,6 +216,26 @@ class RunAndVerificationTests(unittest.TestCase):
         )
         self.assertTrue(result.acceptance_complete)
 
+    def test_evidenced_acceptance_paraphrase_matches_conservatively(self):
+        value = dict(VALID_RESULT)
+        value["result"] = "Due to missing validation, failures may occur."
+        value["acceptance_check"] = [{
+            "criterion": "Rewrite the statement concisely",
+            "met": True,
+            "evidence": "Output is shorter.",
+        }]
+        result = verify_output(value, [], ["Produce concise rewrite"], coordinator_review_required=False)
+        self.assertTrue(result.acceptance_complete)
+        self.assertEqual(result.status, "accepted")
+
+    def test_non_blocker_sentinel_is_removed(self):
+        value = dict(VALID_RESULT)
+        value["blockers"] = ["None"]
+        parsed, errors = parse_worker_output(json.dumps(value))
+        result = verify_output(parsed, errors, ["works"], coordinator_review_required=False)
+        self.assertEqual(parsed["blockers"], [])
+        self.assertEqual(result.status, "accepted")
+
 
 class RegistryTests(unittest.TestCase):
     def test_owner_override_adds_and_removes_capabilities(self):
@@ -207,6 +266,10 @@ class RegistryTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_public_run_does_not_echo_packaged_prompt(self):
+        run = RunRecord("job", "model", "chat", 1, True, prompt="private source")
+        self.assertNotIn("prompt", _public_run(run))
+
     def test_list_output_uses_contract_envelope(self):
         output = io.StringIO()
         with redirect_stdout(output):
@@ -214,6 +277,29 @@ class ContractTests(unittest.TestCase):
         parsed = json.loads(output.getvalue())
         self.assertEqual(parsed["contract_version"], "head-chef.v2")
         self.assertEqual(parsed["data"][0]["name"], "m")
+
+    def test_cook_parser_exposes_one_command_workflow(self):
+        args = build_parser().parse_args([
+            "cook", "--project", ".", "--task", "Analyze safely", "--acceptance", "Return result",
+        ])
+        self.assertEqual(args.command, "cook")
+        self.assertEqual(args.acceptance, ["Return result"])
+
+    def test_command_capture_keeps_json_contract_parseable(self):
+        def command(_):
+            _json({"value": 3})
+            return 0
+
+        code, payload = _captured_command(command, argparse.Namespace())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["value"], 3)
+
+    def test_json_contract_escapes_unicode_for_windows_console(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _json({"value": "step → rollback"})
+        self.assertIn("\\u2192", output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())["value"], "step → rollback")
 
     def test_kitchen_assigns_only_matching_specialists(self):
         profiles = [
@@ -226,6 +312,96 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(kitchen["stations"]["coding"]["model"], "coder")
         self.assertEqual(kitchen["stations"]["vision"]["model"], "vision")
         self.assertEqual(kitchen["stations"]["embedding"]["model"], "embed")
+
+    def test_strength_benchmark_only_runs_advertised_category(self):
+        class BenchClient(FakeClient):
+            def embed(self, model, inputs, **kwargs):
+                return OllamaResponse("", {"embeddings": [[0.1, 0.2, 0.3]]})
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "bench.json"
+            output.write_text(json.dumps({"results": [{
+                "model": "writer", "model_digest": "w1", "category": "writing", "score": 80,
+            }]}), encoding="utf-8")
+            payload = run_benchmarks(
+                BenchClient(),
+                [ModelProfile("embed", digest="abc", capabilities={"embedding"})],
+                output,
+                2,
+                categories={"embedding", "coding"},
+                assignments={"embed": {"embedding"}},
+            )
+            self.assertTrue(Path(payload["artifact_path"]).exists())
+        self.assertEqual(len(payload["results"]), 2)
+        embedding = next(item for item in payload["results"] if item["category"] == "embedding")
+        self.assertEqual(embedding["model_digest"], "abc")
+
+    def test_stale_digest_benchmark_is_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bench.json"
+            path.write_text(json.dumps({
+                "results": [
+                    {"model": "a", "model_digest": "old", "category": "analysis", "score": 100, "ok": True, "suite_version": "s"},
+                    {"model": "b", "model_digest": "b1", "category": "analysis", "score": 0, "ok": True, "suite_version": "s"},
+                ],
+                "benchmark": "s",
+            }), encoding="utf-8")
+            models = [
+                ModelProfile("a", digest="new", capabilities={"analysis"}),
+                ModelProfile("b", digest="b1", capabilities={"analysis"}),
+            ]
+            decision = route(RouteRequest("analyze", required_capability="analysis"), models, benchmark_path=path)
+        a_reasons = next(item.reasons for item in decision.candidates if item.model == "a")
+        self.assertFalse(any("strength" in reason for reason in a_reasons))
+
+    def test_equal_strength_prefers_materially_faster_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bench.json"
+            path.write_text(json.dumps({
+                "benchmark": "suite",
+                "results": [
+                    {"model": "small", "model_digest": "s", "category": "analysis", "score": 100,
+                     "elapsed_seconds": 5, "ok": True, "suite_version": "suite"},
+                    {"model": "large", "model_digest": "l", "category": "analysis", "score": 100,
+                     "elapsed_seconds": 20, "ok": True, "suite_version": "suite"},
+                ],
+            }), encoding="utf-8")
+            models = [
+                ModelProfile("small", digest="s", capabilities={"analysis"}, parameter_billions=4),
+                ModelProfile("large", digest="l", capabilities={"analysis"}, parameter_billions=26),
+            ]
+            decision = route(RouteRequest("analyze", required_capability="analysis"), models, benchmark_path=path)
+        self.assertEqual(decision.selected_model, "small")
+
+    def test_stale_digest_outcomes_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "outcomes.jsonl"
+            path.write_text(json.dumps({
+                "model": "a", "model_digest": "old", "category": "analysis",
+                "ok": True, "elapsed_seconds": 1,
+            }) + "\n", encoding="utf-8")
+            decision = route(
+                RouteRequest("analyze", required_capability="analysis"),
+                [ModelProfile("a", digest="new", capabilities={"analysis"})],
+                outcome_path=path,
+            )
+        reasons = decision.candidates[0].reasons
+        self.assertFalse(any("observed" in reason for reason in reasons))
+
+    def test_planning_eval_requires_exactly_three_bounded_steps(self):
+        expected = (("validat",), ("test",), ("rollback", "revert"))
+        good = json.dumps({
+            "answer": "1. Validate schema. 2. Test failures. 3. Rollback safely.",
+            "risks": [], "needs_review": True,
+        })
+        verbose = json.dumps({
+            "answer": "1. Validate. 2. Test. 3. Rollback. 4. Add unrelated work.",
+            "risks": [], "needs_review": True,
+        })
+        _, _, good_ok = _chat_score(good, expected, 1, {}, "planning")
+        _, _, verbose_ok = _chat_score(verbose, expected, 1, {}, "planning")
+        self.assertTrue(good_ok)
+        self.assertFalse(verbose_ok)
 
 
 if __name__ == "__main__":

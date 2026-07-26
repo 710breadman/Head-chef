@@ -4,19 +4,19 @@
 |---|---|---|---|---|
 | Token estimation | Unit tests | Not required | Formula sanity | Automated pass |
 | Safe/warn/split budget | Unit tests | Not required | Threshold review | Automated pass |
-| Coding route | Fixture test | Owner model inventory | Confirm useful choice | Automated pass; local pending |
-| Vision route | Fixture test | Owner model inventory | Confirm useful choice | Automated pass; local pending |
-| Large planning route | Fixture test | Owner model inventory | Confirm useful choice | Automated pass; local pending |
+| Coding route | Fixture test | Qwen Coder strength probe | Coordinator review | Automated + local hardware pass |
+| Vision route | Fixture test | Qwen VL image probe | Output review | Automated + local hardware pass |
+| Large planning route | Fixture test | Gemma comparison | Contract review | Automated + local hardware pass |
 | Embedding rejection | Fixture test | Owner model inventory | None | Automated pass |
 | Manual missing model | Fixture/contract test | Ollama | Error clarity | Partially covered |
 | Job persistence | Unit test | Windows filesystem | Inspect JSON | Automated pass; Windows pending |
-| Worker prompt boundary | Unit test | One real dispatch | Review output | Automated pass; local pending |
+| Worker prompt boundary | Unit test | Real dispatch | Review output | Automated + local hardware pass |
 | Ollama unavailable | Contract test needed | Stop Ollama | Error clarity | Pending |
 | Ollama model inventory | Mock test needed | Real Ollama | Profile review | Pending |
-| Structured benchmark | Parser tests needed | Real models | Label usefulness | Pending |
+| Structured benchmark | Category/digest tests | Seven assigned stations | Label usefulness | Automated + local hardware pass |
 | Windows install | Script syntax only | Clean Windows 11 | Nontechnical flow | Pending |
 | Privacy boundary | Documentation | Inspect `.gitignore` | Security review | Initial |
-| Oversized dispatch block | Contract test needed | Real job | Error clarity | Pending |
+| Oversized dispatch block | Contract tests | Real job | Error clarity | Automated pass |
 
 ## Test commands
 
@@ -47,4 +47,4 @@ python -m unittest discover -s tests -v
 - Registry: valid add/remove/context override and fail-closed unknown fields.
 - Routing: embedding hard requirement.
 
-Pending target checks: live `/api/chat`, multimodal images, `/api/embed`, model digests, clean Windows install, junction/UNC/ADS behavior, GPU/runtime metrics.
+Live `/api/chat`, multimodal vision, `/api/embed`, and model digests passed on this host. Pending: clean Windows install, privileged junction/reparse behavior, UNC/ADS behavior, and GPU/runtime metrics.

@@ -105,6 +105,7 @@ State and evidence are recorded
 | `review` | Append coordinator verdict without mutating run evidence. |
 | `checkpoint` / `resume` | Save or read compact Codex-facing handoff state. |
 | `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
+| `cook` | Route, package, dispatch, validate, and record one bounded task. |
 
 ## Kitchen routing
 
@@ -117,6 +118,14 @@ Head Chef treats models as stations, not interchangeable general workers:
 - planning, retrieval, analysis: capable generalists ranked with task-matched outcomes.
 
 Cloud-tag models are excluded by default. Manual overrides cannot assign a model outside advertised capabilities. Successful, invalid, and timed-out dispatches feed category-specific latency/reliability evidence into future routing.
+
+Install optional Codex skill:
+
+```powershell
+.\scripts\Install-CodexSkill.ps1
+```
+
+Restart Codex, then invoke `$head-chef-local-router`. Repository `AGENTS.md` also defines direct Head Chef behavior.
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents
