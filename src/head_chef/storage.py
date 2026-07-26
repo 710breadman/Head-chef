@@ -35,6 +35,17 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
+def atomic_create_json(path: Path, data: dict[str, Any]) -> None:
+    """Create immutable evidence; fail instead of replacing an existing record."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(payload)
+    except FileExistsError as exc:
+        raise FileExistsError(f"Refusing to overwrite immutable record: {path}") from exc
+
+
 def append_jsonl(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

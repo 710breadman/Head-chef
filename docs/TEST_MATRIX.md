@@ -37,3 +37,14 @@ python -m unittest discover -s tests -v
 - **Human review pass:** usefulness or clarity was explicitly reviewed.
 - **Provisional:** implemented but not proven in the target environment.
 - **Fully accepted:** all required labels for the item are complete.
+# v0.2 additions
+
+- Executor contract: chat, embedding, missing vision input.
+- Policy: coding/planning manual overrides require review.
+- Evidence: unique attempt count, create-exclusive overwrite rejection.
+- Contracts: valid structured result, prose rejection, acceptance/review gate.
+- Context: manifest hashes, dedupe, traversal, binary, deterministic split.
+- Registry: valid add/remove/context override and fail-closed unknown fields.
+- Routing: embedding hard requirement.
+
+Pending target checks: live `/api/chat`, multimodal images, `/api/embed`, model digests, clean Windows install, junction/UNC/ADS behavior, GPU/runtime metrics.

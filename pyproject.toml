@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "head-chef"
-version = "0.1.0"
-description = "A transparent local-model router, token governor, and job-card generator for Codex-led projects."
+version = "0.2.0"
+description = "A transparent, evidence-based local-model dispatcher for Codex-led projects."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "710breadman" }]

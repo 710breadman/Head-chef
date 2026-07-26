@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from .models import ModelProfile
 from .token_governor import BudgetResult, evaluate_budget
+from .policy import coordinator_review_required
 
 
 TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -25,6 +26,10 @@ class RouteRequest:
     required_capability: str | None = None
     manual_model: str | None = None
     prefer_quality: bool = True
+    modalities: list[str] = field(default_factory=lambda: ["text"])
+    complexity: str = "medium"
+    risk: str = "low"
+    output_format: str = "json"
 
 
 @dataclass(slots=True)
@@ -48,6 +53,7 @@ class RouteDecision:
     requires_split: bool
     coordinator_review_required: bool
     explanation: str
+    schema_version: str = "2.0"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,8 +148,10 @@ def route(
             candidates=[CandidateScore(selected.name, 100.0, ["manual override"])],
             budget=budget,
             requires_split=budget.status == "split",
-            coordinator_review_required=budget.status != "safe",
-            explanation="Manual override selected. Head Chef still checked the context budget.",
+            coordinator_review_required=coordinator_review_required(
+                request.task, category, requires_split=budget.status == "split", confidence=1.0
+            ),
+            explanation="Manual override changed model choice only. Capability, budget, and review policy still apply.",
         )
 
     candidates: list[CandidateScore] = []
@@ -170,7 +178,7 @@ def route(
             reasons.append(f"no strong {category} signal")
 
         if request.prefer_quality:
-            quality_bonus = min(28.0, profile.parameter_billions)
+            quality_bonus = min(8.0, profile.parameter_billions / 4)
             score += quality_bonus
             if quality_bonus:
                 reasons.append(f"quality-size bonus +{quality_bonus:.1f}")
@@ -193,10 +201,15 @@ def route(
             reasons.append("large context metadata")
 
         benchmark = benchmark_scores.get(profile.name)
+        benchmark = profile.benchmark_scores.get(category, benchmark)
         if benchmark is not None:
             bonus = max(-10.0, min(10.0, benchmark - 50.0))
             score += bonus
             reasons.append(f"local benchmark adjustment {bonus:+.1f}")
+        reliability_bonus = (profile.reliability - 0.5) * 20
+        score += reliability_bonus
+        if reliability_bonus:
+            reasons.append(f"reliability adjustment {reliability_bonus:+.1f}")
 
         candidates.append(CandidateScore(profile.name, round(score, 2), reasons, False))
 
@@ -226,7 +239,9 @@ def route(
         safety_margin_tokens,
     )
     requires_split = budget.status == "split"
-    coordinator_review = requires_split or category in {"planning", "coding"} or confidence < 0.70
+    coordinator_review = coordinator_review_required(
+        request.task, category, requires_split=requires_split, confidence=confidence
+    )
 
     explanation = (
         f"Selected {winner.model} for {category}. "

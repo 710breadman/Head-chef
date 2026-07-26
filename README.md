@@ -10,17 +10,18 @@ It does not replace Codex, secretly edit files, or invent a complicated autonomo
 4. What exactly was sent to the model, and what came back?
 5. What should happen when a worker fails or a task is blocked?
 
-## Current v0.1 capabilities
+## Current v0.2 capabilities
 
 - Detects locally installed Ollama models.
-- Infers likely model capabilities from model metadata and names.
-- Routes coding, vision, planning, analysis, writing, retrieval, and embedding tasks.
+- Keeps a digest-aware model registry; owner overrides are validated and provenance-marked.
+- Routes through separate chat, multimodal chat, and embedding executors.
 - Explains every routing score and supports a manual override.
 - Estimates prompt size and recommends splitting oversized work.
-- Creates narrow, persistent JSON job cards.
+- Creates schema-versioned job cards and automatic child/synthesis jobs when packaged context must split.
 - Sends a job to Ollama without granting the model shell or filesystem access.
-- Records request, response, model, timing, and token metadata.
-- Runs a tiny opt-in benchmark against already-installed models.
+- Records every success or failure as a unique, immutable run attempt.
+- Requires structured worker JSON, validates it, then gates acceptance behind coordinator review policy.
+- Runs task-specific, versioned opt-in benchmarks against already-installed models.
 - Provides a Windows-friendly doctor and installation script.
 
 ## Safety boundary
@@ -96,11 +97,13 @@ State and evidence are recorded
 |---|---|
 | `doctor` | Check Python-facing Ollama connectivity and local configuration. |
 | `models` | List installed models and inferred capabilities. |
-| `route` | Recommend a model and explain the decision. |
+| `route` / `plan` | Recommend a model and explain the decision. |
 | `budget` | Estimate context usage and split pressure. |
-| `job` | Create a persistent, bounded job card. |
+| `job` / `delegate` | Package approved files and create bounded job card(s). |
 | `dispatch` | Send one job card to Ollama and save evidence. |
-| `benchmark` | Run a small structured-output benchmark on installed models. |
+| `benchmark` | Run task-specific structured-output suites on installed models. |
+| `review` | Append coordinator verdict without mutating run evidence. |
+| `checkpoint` / `resume` | Save or read compact Codex-facing handoff state. |
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents
@@ -117,4 +120,8 @@ State and evidence are recorded
 
 ## Scope discipline
 
-The first release stays intentionally narrow: **router, token governor, job cards, evidence, diagnostics, and a tiny benchmarker**. A graphical dashboard, remote workers, model downloads, autonomous repository editing, vector-memory infrastructure, and multi-agent swarms are deferred until the core routing loop is proven useful.
+Scope stays narrow: **router, token governor, safe context packaging, typed executors, immutable evidence, verification, diagnostics, and benchmarks**. Dashboard, remote workers, model downloads, autonomous editing, vector memory, and swarms remain deferred.
+
+## Validation boundary
+
+CI-safe tests use mocks and temporary files. No live Ollama, model-quality, GPU, or clean-Windows claim is made unless run on owner hardware. Embeddings are represented by count in CLI evidence; raw vectors are not echoed.

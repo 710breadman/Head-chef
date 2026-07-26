@@ -199,3 +199,8 @@ The board unanimously selected a **small, synchronous, transparent control layer
 ## Major tradeoff
 
 The selected architecture is less autonomous, but substantially easier to inspect, test, recover, and trust. That is the correct trade for a coordinator intended to reduce paid usage without sacrificing project quality.
+# v0.2 skeptical board checkpoint
+
+Architecture, security/reliability, and testing reviewers independently confirmed three P0 defects: chat-only dispatch, manual-override review bypass, and overwritten run evidence. v0.2 fixes all three and adds schema/version, registry, context, benchmark, and verification boundaries.
+
+Board keeps release provisional. Remaining hard gaps: live Ollama API variation, target GPU performance, clean Windows install, Windows reparse-path edge cases, and license selection. Parameter count is now a weak routing fallback; comparable task evidence and reliability can outweigh it.

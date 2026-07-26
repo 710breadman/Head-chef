@@ -7,6 +7,8 @@ from typing import Any
 
 from .router import RouteDecision
 from .storage import atomic_write_json, compact_timestamp, utc_now
+from .contracts import SCHEMA_VERSION
+import secrets
 
 
 @dataclass(slots=True)
@@ -28,6 +30,11 @@ class JobCard:
     coordinator_review_required: bool = True
     requires_split: bool = False
     routing_explanation: str = ""
+    schema_version: str = SCHEMA_VERSION
+    task_profile: dict[str, Any] = field(default_factory=dict)
+    input_images: list[str] = field(default_factory=list)
+    parent_job_id: str | None = None
+    dependencies: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,7 +59,7 @@ def create_job_card(
     exclusions: list[str] | None = None,
 ) -> JobCard:
     return JobCard(
-        id=f"HC-{compact_timestamp()}-{_slug(task)}",
+        id=f"HC-{compact_timestamp()}-{secrets.token_hex(4)}-{_slug(task)}",
         project=project,
         task=task,
         selected_model=decision.selected_model,
@@ -72,7 +79,8 @@ def create_job_card(
 
 def save_job_card(job: JobCard, jobs_dir: Path) -> Path:
     path = jobs_dir / f"{job.id}.json"
-    atomic_write_json(path, job.to_dict())
+    from .storage import atomic_create_json
+    atomic_create_json(path, job.to_dict())
     return path
 
 
@@ -80,6 +88,15 @@ def load_job_card(path: Path) -> JobCard:
     import json
 
     data = json.loads(path.read_text(encoding="utf-8"))
+    version = data.get("schema_version", "1.0")
+    if version == "1.0":
+        data["schema_version"] = SCHEMA_VERSION
+    elif version != SCHEMA_VERSION:
+        raise ValueError(f"Unsupported job schema_version: {version}")
+    if not isinstance(data.get("task"), str) or not data["task"].strip():
+        raise ValueError("Job task must be a non-empty string")
+    if data.get("category") not in {"analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding"}:
+        raise ValueError("Invalid job category")
     return JobCard(**data)
 
 
@@ -121,6 +138,10 @@ ACCEPTANCE CRITERIA
 
 TEST OR VERIFICATION COMMANDS
 {tests}
+
+OUTPUT
+- Return only one JSON object matching supplied schema.
+- Never wrap JSON in Markdown fences.
 
 RULES
 - Do not silently change architecture, public interfaces, stored data, security policy, or dependencies.

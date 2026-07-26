@@ -73,3 +73,14 @@ Only after measured need:
 - Unreviewed migrations or public API changes.
 - Cloud accounts other than the chosen coordinator.
 - A generalized autonomous-agent framework.
+# v0.2 roadmap update
+
+Core completed: typed executors, policy invariants, schema v2, immutable attempts, registry/overrides, structured profiles, multidimensional routing signals, safe packaging/splitting, task suites, structured outputs, review loop, Codex contracts.
+
+Next gates:
+
+1. Owner Windows/Ollama acceptance across chat, vision, embedding.
+2. Collect digest-matched benchmark and reliability evidence.
+3. Add Windows CI matrix plus junction/UNC/ADS adversarial fixtures.
+4. Add explicit v1 migration fixtures and response-size transport cap.
+5. Owner selects license before public release.

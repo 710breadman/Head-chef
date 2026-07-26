@@ -61,6 +61,10 @@ class RouterTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected_model)
 
+    def test_embedding_routes_only_to_embedding_model(self):
+        decision = route(RouteRequest(task="Create embeddings", required_capability="embedding"), self.models)
+        self.assertEqual(decision.selected_model, "qwen3-embedding:0.6b")
+
 
 if __name__ == "__main__":
     unittest.main()

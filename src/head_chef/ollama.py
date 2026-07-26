@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from typing import Any
+import base64
 from urllib import error, request
 
 
@@ -75,9 +76,18 @@ class OllamaClient:
         options: dict[str, Any] | None = None,
         timeout_seconds: int | None = None,
     ) -> OllamaResponse:
+        encoded_messages: list[dict[str, Any]] = []
+        for message in messages:
+            encoded = dict(message)
+            if "images" in encoded:
+                encoded["images"] = [
+                    base64.b64encode(value).decode("ascii") if isinstance(value, bytes) else value
+                    for value in encoded["images"]
+                ]
+            encoded_messages.append(encoded)
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": encoded_messages,
             "stream": False,
         }
         if format_schema is not None:
@@ -89,3 +99,18 @@ class OllamaClient:
         message = raw.get("message", {})
         content = message.get("content", "") if isinstance(message, dict) else ""
         return OllamaResponse(content=str(content), raw=raw)
+
+    def embed(
+        self,
+        model: str,
+        inputs: list[str],
+        *,
+        timeout_seconds: int | None = None,
+    ) -> OllamaResponse:
+        raw = self._request(
+            "POST",
+            "/api/embed",
+            {"model": model, "input": inputs},
+            timeout_seconds,
+        )
+        return OllamaResponse(content="", raw=raw)

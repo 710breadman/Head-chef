@@ -26,6 +26,11 @@ class ModelProfile:
     context_tokens: int = 8192
     capabilities: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
+    digest: str = ""
+    metadata_complete: bool = False
+    capability_source: str = "inferred"
+    benchmark_scores: dict[str, float] = field(default_factory=dict)
+    reliability: float = 0.5
 
     @property
     def is_embedding_only(self) -> bool:
@@ -118,6 +123,9 @@ def profile_from_ollama(
         context_tokens=_context_from_show(show, default_context_tokens),
         capabilities=capabilities,
         notes=sorted(set(notes)),
+        digest=str(raw.get("digest") or ""),
+        metadata_complete=bool(show),
+        capability_source="ollama" if show_capabilities else "inferred",
     )
 
 

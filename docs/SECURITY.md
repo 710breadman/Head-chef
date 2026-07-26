@@ -46,3 +46,12 @@ The following changes require a dedicated security review:
 - Git ignore does not protect files from other local users or backup software.
 - The current job format does not encrypt private content.
 - The first release has not yet been validated on the owner’s Windows machine.
+# v0.2 controls
+
+- Context packager reads only explicit project-relative files; rejects traversal, binary/NUL, non-UTF-8, duplicate content, known secret markers, and size overflow.
+- Vision images must remain inside project root and use approved formats.
+- Local workers receive no shell or filesystem tools.
+- Worker JSON is untrusted until schema validation and coordinator review.
+- Manual model override never overrides policy.
+- Run attempts use create-exclusive immutable files; coordinator verdicts are separate append-only artifacts.
+- Remote Ollama remains outside validated deployment scope. Use loopback unless data-egress risk is explicitly accepted.

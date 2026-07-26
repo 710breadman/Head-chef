@@ -48,6 +48,15 @@ def load_settings(start: Path | None = None) -> tuple[Settings, Path]:
     if env_url:
         settings.ollama_url = env_url.rstrip("/")
 
+    state_path = Path(settings.state_dir)
+    if state_path.is_absolute() or ".." in state_path.parts:
+        raise ValueError("state_dir must be a project-relative path without '..'")
+    resolved_state = (root / state_path).resolve()
+    try:
+        resolved_state.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("state_dir escapes project root") from exc
+
     return settings, root
 
 

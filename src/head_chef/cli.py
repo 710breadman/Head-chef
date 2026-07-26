@@ -15,10 +15,20 @@ from .models import ModelProfile, profile_from_ollama
 from .ollama import OllamaClient, OllamaError
 from .router import RouteRequest, route
 from .storage import append_jsonl, atomic_write_json, ensure_state, utc_now
+from .contracts import CONTRACT_VERSION
+from .executors import execute_job
+from .verification import parse_worker_output, verify_output, validate_review_status
+from .runs import RunRecord, next_attempt, save_run
+from .registry import apply_overrides, load_overrides, save_registry
+from .context_packager import package_context, render_package, split_context
 from .token_governor import evaluate_budget
 
 
 def _json(data: Any) -> None:
+    if not isinstance(data, dict):
+        data = {"contract_version": CONTRACT_VERSION, "data": data}
+    elif "contract_version" not in data:
+        data = {"contract_version": CONTRACT_VERSION, **data}
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
@@ -85,9 +95,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_models(args: argparse.Namespace) -> int:
-    settings, _ = load_settings()
+    settings, root = load_settings()
     try:
         profiles = _profiles(_client(settings), settings)
+        overrides = load_overrides(root / settings.state_dir / "model-overrides.json")
+        profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
+        save_registry(root / settings.state_dir / "registry.json", profiles)
     except OllamaError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -183,6 +196,26 @@ def cmd_job(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"Cannot read context file {args.context_file}: {exc}", file=sys.stderr)
             return 1
+    if args.allowed_file:
+        try:
+            packaged = package_context(Path(args.project), args.allowed_file, args.forbidden_file)
+            context_text = render_package(packaged)
+        except (OSError, ValueError) as exc:
+            print(f"Cannot package context: {exc}", file=sys.stderr)
+            return 2
+        decision = route(
+            RouteRequest(
+                task=args.task,
+                context_text=context_text,
+                required_capability=args.category,
+                manual_model=args.model,
+                prefer_quality=not args.prefer_speed,
+            ),
+            profiles,
+            reserved_output_tokens=settings.reserved_output_tokens,
+            safety_margin_tokens=settings.safety_margin_tokens,
+            benchmark_path=root / settings.state_dir / "benchmarks" / "latest.json",
+        )
 
     job = create_job_card(
         project=args.project,
@@ -196,8 +229,53 @@ def cmd_job(args: argparse.Namespace) -> int:
         context_text=context_text,
         exclusions=args.exclude,
     )
+    job.input_images = args.image
+    job.task_profile = {
+        "task_type": decision.category,
+        "modalities": ["image", "text"] if args.image else ["text"],
+        "complexity": args.complexity,
+        "risk": args.risk,
+        "output": "json",
+    }
     path = save_job_card(job, state / "jobs")
-    _json({"job": job.to_dict(), "path": str(path)})
+    child_paths: list[str] = []
+    if job.requires_split and args.allowed_file and decision.budget:
+        max_chars = max(1, int(decision.budget.usable_input_tokens * 4 * 0.70))
+        try:
+            chunks = split_context(packaged, max_chars)
+        except ValueError as exc:
+            print(f"Cannot split context safely: {exc}", file=sys.stderr)
+            return 2
+        child_ids: list[str] = []
+        for index, chunk in enumerate(chunks, 1):
+            child = create_job_card(
+                project=args.project,
+                task=f"{args.task} [context part {index}/{len(chunks)}]",
+                decision=decision,
+                allowed_files=[item.path for item in chunk],
+                forbidden_files=args.forbidden_file,
+                acceptance_criteria=args.acceptance,
+                test_commands=args.test,
+                context_notes=args.context_note,
+                context_text=render_package(chunk),
+                exclusions=args.exclude,
+            )
+            child.parent_job_id = job.id
+            child.requires_split = False
+            child_ids.append(child.id)
+            child_paths.append(str(save_job_card(child, state / "jobs")))
+        synthesis = create_job_card(
+            project=args.project,
+            task=f"Synthesize child results for: {args.task}",
+            decision=decision,
+            acceptance_criteria=args.acceptance,
+            exclusions=["Do not add claims absent from child results"],
+        )
+        synthesis.parent_job_id = job.id
+        synthesis.dependencies = child_ids
+        synthesis.requires_split = False
+        child_paths.append(str(save_job_card(synthesis, state / "jobs")))
+    _json({"job": job.to_dict(), "path": str(path), "child_job_paths": child_paths})
     return 0 if job.selected_model else 2
 
 
@@ -205,6 +283,12 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     settings, root = load_settings()
     state = ensure_state(root, settings.state_dir)
     path = Path(args.job).resolve()
+    jobs_root = (state / "jobs").resolve()
+    try:
+        path.relative_to(jobs_root)
+    except ValueError:
+        print("Job card must be inside project .head-chef/jobs.", file=sys.stderr)
+        return 2
     try:
         job = load_job_card(path)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -214,49 +298,118 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     if not job.selected_model:
         print("Job has no selected local model.", file=sys.stderr)
         return 2
-    if job.requires_split and not args.allow_oversized:
-        print("Job is marked oversized. Split it first or pass --allow-oversized explicitly.", file=sys.stderr)
+    if job.requires_split:
+        print("Job is marked oversized. Dispatch generated child jobs instead.", file=sys.stderr)
         return 2
 
-    prompt = render_worker_prompt(job)
+    prompt = render_worker_prompt(job) if job.category != "embedding" else None
     client = _client(settings)
+    attempt = next_attempt(state / "runs", job.id)
     try:
-        response = client.chat(
-            job.selected_model,
-            [
-                {"role": "system", "content": "Stay inside the supplied job card. Your output is advisory and will be reviewed."},
-                {"role": "user", "content": prompt},
-            ],
-            options={"temperature": args.temperature},
+        execution = execute_job(
+            client, job,
+            temperature=args.temperature,
             timeout_seconds=args.timeout or settings.request_timeout_seconds,
         )
-    except OllamaError as exc:
-        append_jsonl(
-            state / "runs" / "history.jsonl",
-            {"created_at": utc_now(), "job_id": job.id, "model": job.selected_model, "ok": False, "error": str(exc)},
+        response = execution.response
+    except (OllamaError, ValueError) as exc:
+        failed = RunRecord(
+            job.id, job.selected_model, job.category, attempt, False,
+            prompt=prompt, error=str(exc),
         )
+        failed_path = save_run(failed, state / "runs")
         print(str(exc), file=sys.stderr)
         return 1
 
-    run = {
-        "created_at": utc_now(),
-        "job_id": job.id,
-        "model": job.selected_model,
-        "ok": True,
-        "prompt": prompt,
-        "response": response.content,
-        "metrics": {
+    parsed = None
+    errors: list[str] = []
+    if job.category != "embedding":
+        parsed, errors = parse_worker_output(response.content)
+    else:
+        parsed = {"embedding_count": len(response.raw.get("embeddings", []))}
+    verification = verify_output(
+        parsed if job.category != "embedding" else {
+            "result": "embedding generated", "changed_files": [], "assumptions": [], "risks": [],
+            "tests_recommended": [], "acceptance_check": [], "confidence": 1.0, "blockers": [],
+        },
+        errors,
+        job.acceptance_criteria,
+        coordinator_review_required=job.coordinator_review_required,
+    )
+    run = RunRecord(
+        job.id, job.selected_model, execution.executor, attempt, not errors,
+        prompt=prompt,
+        response=parsed if parsed is not None else response.content,
+        validation_errors=errors,
+        metrics={
             "total_duration": response.raw.get("total_duration"),
             "load_duration": response.raw.get("load_duration"),
             "prompt_eval_count": response.raw.get("prompt_eval_count"),
             "eval_count": response.raw.get("eval_count"),
             "done_reason": response.raw.get("done_reason"),
         },
+        review_status=verification.status,
+        review_notes=verification.notes,
+    )
+    run_path = save_run(run, state / "runs")
+    _json({"run_path": str(run_path), "run": run.to_dict(), "verification": verification.to_dict()})
+    return 0 if not errors else 4
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    import json
+    validate_review_status(args.status)
+    path = Path(args.run).resolve()
+    settings, root = load_settings()
+    runs_root = (root / settings.state_dir / "runs").resolve()
+    try:
+        path.relative_to(runs_root)
+    except ValueError:
+        print("Run must be inside project .head-chef/runs.", file=sys.stderr)
+        return 2
+    data = json.loads(path.read_text(encoding="utf-8"))
+    review = {
+        "schema_version": "2.0",
+        "created_at": utc_now(),
+        "run_id": data.get("run_id"),
+        "job_id": data.get("job_id"),
+        "status": args.status,
+        "note": args.note or "",
     }
-    run_path = state / "runs" / f"{job.id}.json"
-    atomic_write_json(run_path, run)
-    append_jsonl(state / "runs" / "history.jsonl", {key: value for key, value in run.items() if key not in {"prompt", "response"}})
-    _json({"run_path": str(run_path), "model": job.selected_model, "response": response.content, "metrics": run["metrics"]})
+    run_id = str(data.get("run_id"))
+    review_number = len(list(path.parent.glob(f"{run_id}-review-*.json"))) + 1
+    review_path = path.parent / f"{run_id}-review-{review_number}.json"
+    from .storage import atomic_create_json
+    atomic_create_json(review_path, review)
+    _json({"review_path": str(review_path), "review": review})
+    return 0
+
+
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    settings, root = load_settings()
+    state = ensure_state(root, settings.state_dir)
+    jobs = sorted((state / "jobs").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    runs = sorted((state / "runs").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    checkpoint = {
+        "schema_version": "2.0",
+        "created_at": utc_now(),
+        "latest_job": str(jobs[0]) if jobs else None,
+        "latest_run": str(runs[0]) if runs else None,
+        "next_action": args.next_action or "Review latest run or create next bounded job.",
+    }
+    output = state / "checkpoint.json"
+    atomic_write_json(output, checkpoint)
+    _json({"checkpoint_path": str(output), "checkpoint": checkpoint})
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    settings, root = load_settings()
+    path = root / settings.state_dir / "checkpoint.json"
+    if not path.exists():
+        print("No checkpoint exists.", file=sys.stderr)
+        return 2
+    _json({"checkpoint_path": str(path), "checkpoint": json.loads(path.read_text(encoding="utf-8"))})
     return 0
 
 
@@ -306,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--json", action="store_true")
     models.set_defaults(func=cmd_models)
 
-    route_cmd = sub.add_parser("route", help="Recommend an installed local model.")
+    route_cmd = sub.add_parser("route", aliases=["plan"], help="Recommend an installed local model.")
     route_cmd.add_argument("--task", required=True)
     route_cmd.add_argument("--context-file")
     route_cmd.add_argument("--category", choices=["analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding"])
@@ -320,7 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     budget.add_argument("--context-tokens", type=int)
     budget.set_defaults(func=cmd_budget)
 
-    job = sub.add_parser("job", help="Create a bounded local-worker job card.")
+    job = sub.add_parser("job", aliases=["delegate"], help="Create a bounded local-worker job card.")
     job.add_argument("--project", required=True)
     job.add_argument("--task", required=True)
     job.add_argument("--context-file", help="Explicit text file to store in the job and send to the local worker.")
@@ -333,19 +486,34 @@ def build_parser() -> argparse.ArgumentParser:
     job.add_argument("--test", action="append", default=[])
     job.add_argument("--context-note", action="append", default=[])
     job.add_argument("--exclude", action="append", default=[])
+    job.add_argument("--image", action="append", default=[])
+    job.add_argument("--complexity", choices=["low", "medium", "high"], default="medium")
+    job.add_argument("--risk", choices=["low", "medium", "high"], default="low")
     job.set_defaults(func=cmd_job)
 
     dispatch = sub.add_parser("dispatch", help="Send one saved job card to its selected Ollama model.")
     dispatch.add_argument("--job", required=True)
     dispatch.add_argument("--timeout", type=int)
     dispatch.add_argument("--temperature", type=float, default=0.1)
-    dispatch.add_argument("--allow-oversized", action="store_true")
     dispatch.set_defaults(func=cmd_dispatch)
 
     benchmark = sub.add_parser("benchmark", help="Run a tiny benchmark on installed generative models.")
     benchmark.add_argument("--model", action="append", default=[])
     benchmark.add_argument("--timeout", type=int)
     benchmark.set_defaults(func=cmd_benchmark)
+
+    review = sub.add_parser("review", help="Append a coordinator verdict to an immutable run.")
+    review.add_argument("--run", required=True)
+    review.add_argument("--status", required=True)
+    review.add_argument("--note")
+    review.set_defaults(func=cmd_review)
+
+    checkpoint = sub.add_parser("checkpoint", help="Save compact resumable state.")
+    checkpoint.add_argument("--next-action")
+    checkpoint.set_defaults(func=cmd_checkpoint)
+
+    resume = sub.add_parser("resume", help="Read compact resumable state.")
+    resume.set_defaults(func=cmd_resume)
 
     return parser
 

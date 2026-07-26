@@ -20,20 +20,24 @@ SCHEMA = {
     "required": ["summary", "risks", "needs_review"],
 }
 
-PROMPT = (
-    "A Python function reads a JSON settings file but does not handle a missing file. "
-    "Return a short summary, a list of risks, and whether coordinator review is needed."
-)
+SUITE_VERSION = "hc-bench-v2.0"
+CASES = {
+    "coding": "Find bug: def first(items): return items[1]. Explain risk.",
+    "planning": "Plan three safe steps to add config validation. Name rollback.",
+    "writing": "Rewrite concisely: Due to the fact that validation is absent, failures may occur.",
+    "requirements": "Extract requirements: input must be UTF-8, max 1 MB, reject traversal.",
+    "hallucination": "You cannot run tools. State whether tests were run and list risks.",
+}
 
 
-def benchmark_model(client: OllamaClient, profile: ModelProfile, timeout_seconds: int) -> dict[str, Any]:
+def benchmark_model(client: OllamaClient, profile: ModelProfile, timeout_seconds: int, category: str = "coding") -> dict[str, Any]:
     started = time.perf_counter()
     try:
         response = client.chat(
             profile.name,
             [
                 {"role": "system", "content": "Return only data matching the requested JSON schema."},
-                {"role": "user", "content": PROMPT},
+                {"role": "user", "content": CASES[category]},
             ],
             format_schema=SCHEMA,
             options={"temperature": 0, "num_predict": 256},
@@ -67,6 +71,8 @@ def benchmark_model(client: OllamaClient, profile: ModelProfile, timeout_seconds
 
         return {
             "model": profile.name,
+            "model_digest": profile.digest,
+            "category": category,
             "ok": True,
             "schema_ok": schema_ok,
             "elapsed_seconds": round(elapsed, 3),
@@ -79,6 +85,8 @@ def benchmark_model(client: OllamaClient, profile: ModelProfile, timeout_seconds
     except OllamaError as exc:
         return {
             "model": profile.name,
+            "model_digest": profile.digest,
+            "category": category,
             "ok": False,
             "schema_ok": False,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -96,11 +104,16 @@ def run_benchmarks(
     output_path: Path,
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    results = [benchmark_model(client, profile, timeout_seconds) for profile in profiles]
+    results = [
+        benchmark_model(client, profile, timeout_seconds, category)
+        for profile in profiles
+        for category in CASES
+    ]
     payload = {
         "created_at": utc_now(),
-        "benchmark": "hc-v0.1-structured-output-smoke",
-        "warning": "This tiny benchmark is a routing hint, not a general model-quality leaderboard.",
+        "schema_version": "2.0",
+        "benchmark": SUITE_VERSION,
+        "warning": "Task-specific local evidence only; not a universal model-quality leaderboard.",
         "results": results,
     }
     atomic_write_json(output_path, payload)
