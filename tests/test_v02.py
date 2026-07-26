@@ -279,7 +279,7 @@ class ContractTests(unittest.TestCase):
             with patch.dict("os.environ", {"HEAD_CHEF_GLOBAL_STATE": str(global_state)}):
                 self.assertEqual(
                     _evidence_path(project, Settings(), "benchmarks/latest.json"),
-                    global_evidence,
+                    global_evidence.resolve(),
                 )
                 local_evidence = project / ".head-chef" / "benchmarks" / "latest.json"
                 local_evidence.parent.mkdir(parents=True)
