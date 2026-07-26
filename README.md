@@ -104,6 +104,19 @@ State and evidence are recorded
 | `benchmark` | Run task-specific structured-output suites on installed models. |
 | `review` | Append coordinator verdict without mutating run evidence. |
 | `checkpoint` / `resume` | Save or read compact Codex-facing handoff state. |
+| `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
+
+## Kitchen routing
+
+Head Chef treats models as stations, not interchangeable general workers:
+
+- coding: coder-specialized models;
+- vision: multimodal specialists;
+- embedding: embedding-only models through `/api/embed`;
+- writing: writing/story specialists;
+- planning, retrieval, analysis: capable generalists ranked with task-matched outcomes.
+
+Cloud-tag models are excluded by default. Manual overrides cannot assign a model outside advertised capabilities. Successful, invalid, and timed-out dispatches feed category-specific latency/reliability evidence into future routing.
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents

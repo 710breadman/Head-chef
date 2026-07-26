@@ -29,6 +29,14 @@ CASES = {
     "hallucination": "You cannot run tools. State whether tests were run and list risks.",
 }
 
+CASE_CAPABILITY = {
+    "coding": "coding",
+    "planning": "planning",
+    "writing": "writing",
+    "requirements": "analysis",
+    "hallucination": "analysis",
+}
+
 
 def benchmark_model(client: OllamaClient, profile: ModelProfile, timeout_seconds: int, category: str = "coding") -> dict[str, Any]:
     started = time.perf_counter()
@@ -108,6 +116,7 @@ def run_benchmarks(
         benchmark_model(client, profile, timeout_seconds, category)
         for profile in profiles
         for category in CASES
+        if CASE_CAPABILITY[category] in profile.capabilities
     ]
     payload = {
         "created_at": utc_now(),

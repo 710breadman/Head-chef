@@ -36,6 +36,10 @@ class ModelProfile:
     def is_embedding_only(self) -> bool:
         return self.capabilities == {"embedding"} or "embedding-only" in self.notes
 
+    @property
+    def is_cloud(self) -> bool:
+        return ":cloud" in self.name.lower() or (0 < self.size_bytes < 1_000_000)
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["capabilities"] = sorted(self.capabilities)
@@ -74,12 +78,17 @@ def infer_capabilities(name: str, family: str = "") -> tuple[set[str], list[str]
         return {"embedding"}, ["embedding-only"]
 
     if any(token in text for token in ("coder", "code", "codestral", "starcoder")):
-        capabilities.update({"coding", "planning"})
-        notes.append("coding-specialist")
+        return {"analysis", "coding", "planning"}, ["coding-specialist"]
+
+    if any(token in text for token in ("story", "writer", "creative")):
+        return {"analysis", "writing"}, ["writing-specialist"]
 
     if any(token in text for token in ("vl", "vision", "llava", "pixtral")):
-        capabilities.add("vision")
+        capabilities = {"analysis", "vision", "retrieval"}
         notes.append("vision-capable-name")
+        if "instruct" in text:
+            notes.append("instruction-tuned-name")
+        return capabilities, notes
 
     if any(token in text for token in ("gemma", "qwen", "llama", "mistral", "phi", "deepseek")):
         capabilities.update({"planning", "retrieval"})

@@ -30,6 +30,7 @@ class RouteRequest:
     complexity: str = "medium"
     risk: str = "low"
     output_format: str = "json"
+    allow_cloud: bool = False
 
 
 @dataclass(slots=True)
@@ -99,6 +100,33 @@ def _load_benchmark_scores(path: Path | None) -> dict[str, float]:
     return scores
 
 
+def _load_outcomes(path: Path | None, category: str) -> dict[str, tuple[float, float]]:
+    if not path or not path.exists():
+        return {}
+    grouped: dict[str, list[tuple[bool, float]]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("category") != category or not isinstance(item.get("model"), str):
+            continue
+        grouped.setdefault(item["model"], []).append(
+            (bool(item.get("ok")), float(item.get("elapsed_seconds") or 0))
+        )
+    return {
+        model: (
+            sum(1 for ok, _ in values if ok) / len(values),
+            sum(seconds for _, seconds in values) / len(values),
+        )
+        for model, values in grouped.items()
+    }
+
+
 def route(
     request: RouteRequest,
     profiles: Iterable[ModelProfile],
@@ -106,10 +134,12 @@ def route(
     reserved_output_tokens: int = 2048,
     safety_margin_tokens: int = 1024,
     benchmark_path: Path | None = None,
+    outcome_path: Path | None = None,
 ) -> RouteDecision:
     profiles = list(profiles)
     category = classify_task(request.task, request.required_capability)
     benchmark_scores = _load_benchmark_scores(benchmark_path)
+    outcomes = _load_outcomes(outcome_path, category)
 
     if request.manual_model:
         selected = next((p for p in profiles if p.name == request.manual_model), None)
@@ -123,6 +153,18 @@ def route(
                 requires_split=False,
                 coordinator_review_required=True,
                 explanation=f"Manual model '{request.manual_model}' is not installed.",
+            )
+        if selected.is_cloud and not request.allow_cloud:
+            return RouteDecision(
+                category=category, selected_model=None, confidence=0.0, candidates=[], budget=None,
+                requires_split=False, coordinator_review_required=True,
+                explanation=f"Manual model '{selected.name}' is cloud-backed; local-only routing rejected it.",
+            )
+        if category not in selected.capabilities:
+            return RouteDecision(
+                category=category, selected_model=None, confidence=0.0, candidates=[],
+                budget=None, requires_split=False, coordinator_review_required=True,
+                explanation=f"Manual model '{selected.name}' does not advertise {category}; strict specialist routing rejected it.",
             )
         if selected.is_embedding_only and category != "embedding":
             return RouteDecision(
@@ -159,6 +201,9 @@ def route(
     for profile in profiles:
         reasons: list[str] = []
         score = 0.0
+        if profile.is_cloud and not request.allow_cloud:
+            candidates.append(CandidateScore(profile.name, -100.0, ["cloud-backed model excluded"], True))
+            continue
 
         if profile.is_embedding_only and category != "embedding":
             candidates.append(CandidateScore(profile.name, -100.0, ["embedding-only model"], True))
@@ -193,6 +238,12 @@ def route(
         if category == "vision" and "vision" in profile.capabilities:
             score += 30
             reasons.append("vision model")
+            if "vision-capable-name" in profile.notes:
+                score += 25
+                reasons.append("vision specialist")
+        if category == "writing" and "writing-specialist" in profile.notes:
+            score += 25
+            reasons.append("writing specialist")
         if category in {"analysis", "planning", "writing"} and profile.parameter_billions >= 20:
             score += 8
             reasons.append("large general model")
@@ -210,6 +261,13 @@ def route(
         score += reliability_bonus
         if reliability_bonus:
             reasons.append(f"reliability adjustment {reliability_bonus:+.1f}")
+        if profile.name in outcomes:
+            success_rate, average_seconds = outcomes[profile.name]
+            outcome_bonus = (success_rate - 0.5) * 30
+            latency_penalty = min(20.0, average_seconds / 10)
+            score += outcome_bonus - latency_penalty
+            reasons.append(f"observed success {success_rate:.0%}")
+            reasons.append(f"observed latency penalty -{latency_penalty:.1f}")
 
         candidates.append(CandidateScore(profile.name, round(score, 2), reasons, False))
 

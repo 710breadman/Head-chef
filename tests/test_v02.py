@@ -8,9 +8,11 @@ from head_chef.contracts import WORKER_OUTPUT_SCHEMA
 from head_chef.executors import execute_job
 from head_chef.jobs import JobCard
 from head_chef.models import ModelProfile
+from head_chef.models import infer_capabilities
 from head_chef.ollama import OllamaResponse
 from head_chef.registry import apply_overrides
 from head_chef.cli import _json
+from head_chef.kitchen import build_kitchen
 from contextlib import redirect_stdout
 import io
 from head_chef.router import RouteRequest, route
@@ -74,6 +76,18 @@ class PolicyTests(unittest.TestCase):
         decision = route(RouteRequest("make plan", required_capability="planning", manual_model="planner"), [model])
         self.assertTrue(decision.coordinator_review_required)
 
+    def test_manual_override_rejected_outside_advertised_strength(self):
+        model = ModelProfile("writer", capabilities={"writing"})
+        decision = route(RouteRequest("inspect image", required_capability="vision", manual_model="writer"), [model])
+        self.assertIsNone(decision.selected_model)
+        self.assertIn("does not advertise vision", decision.explanation)
+
+    def test_cloud_model_excluded_from_local_kitchen(self):
+        local = ModelProfile("local", size_bytes=10_000_000, capabilities={"analysis"})
+        cloud = ModelProfile("remote:cloud", size_bytes=100, capabilities={"analysis"})
+        decision = route(RouteRequest("analyze", required_capability="analysis"), [cloud, local])
+        self.assertEqual(decision.selected_model, "local")
+
 
 class ContextTests(unittest.TestCase):
     def test_manifest_hash_and_deduplication(self):
@@ -126,6 +140,43 @@ class RunAndVerificationTests(unittest.TestCase):
         self.assertFalse(result.valid_schema)
         self.assertEqual(result.status, "needs_revision")
 
+    def test_compound_criterion_can_be_evidenced_by_result(self):
+        value = dict(VALID_RESULT)
+        value["result"] = "One red circle, one blue square, and one green triangle."
+        value["acceptance_check"] = [
+            {"criterion": "red circle", "met": True, "evidence": "seen"},
+            {"criterion": "blue square", "met": True, "evidence": "seen"},
+            {"criterion": "green triangle", "met": True, "evidence": "seen"},
+        ]
+        result = verify_output(
+            value,
+            [],
+            ["One red circle, one blue square, and one green triangle"],
+            coordinator_review_required=False,
+        )
+        self.assertTrue(result.acceptance_complete)
+        self.assertEqual(result.status, "accepted")
+
+    def test_confidence_percent_is_normalized_and_audited(self):
+        value = dict(VALID_RESULT)
+        value["confidence"] = 85
+        parsed, errors = parse_worker_output(json.dumps(value))
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed["confidence"], 0.85)
+        self.assertIn("85/100", parsed["normalizations"][0])
+
+    def test_leading_instruction_verb_does_not_cause_false_negative(self):
+        value = dict(VALID_RESULT)
+        value["result"] = "One red circle, one blue square, and one green triangle."
+        value["acceptance_check"] = []
+        result = verify_output(
+            value,
+            [],
+            ["Report one red circle, one blue square, and one green triangle"],
+            coordinator_review_required=False,
+        )
+        self.assertTrue(result.acceptance_complete)
+
 
 class RegistryTests(unittest.TestCase):
     def test_owner_override_adds_and_removes_capabilities(self):
@@ -146,6 +197,14 @@ class RegistryTests(unittest.TestCase):
         profile = apply_overrides(ModelProfile("m"), {})
         self.assertNotIn("owner-override", profile.notes)
 
+    def test_specialist_names_do_not_inherit_unrelated_family_roles(self):
+        coder, _ = infer_capabilities("qwen2.5-coder:7b", "qwen")
+        story, _ = infer_capabilities("ozan-story:latest", "llama")
+        vision, _ = infer_capabilities("qwen3-vl:8b", "qwen")
+        self.assertEqual(coder, {"analysis", "coding", "planning"})
+        self.assertEqual(story, {"analysis", "writing"})
+        self.assertEqual(vision, {"analysis", "vision", "retrieval"})
+
 
 class ContractTests(unittest.TestCase):
     def test_list_output_uses_contract_envelope(self):
@@ -155,6 +214,18 @@ class ContractTests(unittest.TestCase):
         parsed = json.loads(output.getvalue())
         self.assertEqual(parsed["contract_version"], "head-chef.v2")
         self.assertEqual(parsed["data"][0]["name"], "m")
+
+    def test_kitchen_assigns_only_matching_specialists(self):
+        profiles = [
+            ModelProfile("coder", capabilities={"coding"}),
+            ModelProfile("vision", capabilities={"vision"}),
+            ModelProfile("embed", capabilities={"embedding"}, notes=["embedding-only"]),
+            ModelProfile("general", capabilities={"analysis", "planning", "writing", "retrieval"}),
+        ]
+        kitchen = build_kitchen(profiles)
+        self.assertEqual(kitchen["stations"]["coding"]["model"], "coder")
+        self.assertEqual(kitchen["stations"]["vision"]["model"], "vision")
+        self.assertEqual(kitchen["stations"]["embedding"]["model"], "embed")
 
 
 if __name__ == "__main__":

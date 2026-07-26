@@ -111,3 +111,19 @@ Deferred interfaces may later support:
 - retrieval from project summaries.
 
 They must preserve the same authority and evidence boundaries.
+# v0.2 kitchen model
+
+Codex remains head chef. Local models are bounded stations:
+
+```text
+Codex task profile
+  -> hard modality/capability/local-only gate
+  -> station candidates
+  -> digest + task benchmark + observed success/latency + context fit
+  -> bounded job and typed executor
+  -> structured result
+  -> verification and coordinator review
+  -> immutable outcome evidence feeds next route
+```
+
+Specialist names narrow capability inference. Coder, story/writing, vision-language, and embedding models do not inherit unrelated family roles. Generalists cover planning, analysis, writing, and retrieval only when metadata/inference supports them.

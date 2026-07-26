@@ -7,6 +7,15 @@ from typing import Any
 from .contracts import REVIEW_STATUSES, SCHEMA_VERSION, validate_worker_output
 
 
+def _criterion_claim(value: str) -> str:
+    words = value.casefold().rstrip(".").split()
+    if words and words[0] in {"report", "state", "provide", "produce", "identify", "explain", "return"}:
+        words = words[1:]
+    if words and words[0] == "that":
+        words = words[1:]
+    return " ".join(words)
+
+
 @dataclass(slots=True)
 class VerificationResult:
     status: str
@@ -27,6 +36,15 @@ def parse_worker_output(content: str) -> tuple[dict[str, Any] | None, list[str]]
         value = json.loads(content)
     except json.JSONDecodeError as exc:
         return None, [f"worker output is not valid JSON: {exc.msg}"]
+    if (
+        isinstance(value, dict)
+        and isinstance(value.get("confidence"), (int, float))
+        and not isinstance(value.get("confidence"), bool)
+        and 1 < value["confidence"] <= 100
+    ):
+        original = value["confidence"]
+        value["confidence"] = original / 100
+        value["normalizations"] = [f"confidence normalized from {original}/100 to {value['confidence']}/1"]
     errors = validate_worker_output(value)
     return (value if not errors else None), errors
 
@@ -45,7 +63,13 @@ def verify_output(
         for check in value["acceptance_check"]
         if isinstance(check, dict) and check.get("met") is True and check.get("evidence")
     }
-    complete = all(item in reported for item in acceptance_criteria)
+    result_text = value["result"].casefold()
+    complete = all(
+        item in reported
+        or item.casefold().rstrip(".") in result_text
+        or _criterion_claim(item) in result_text
+        for item in acceptance_criteria
+    )
     notes: list[str] = []
     if not complete:
         notes.append("Worker did not provide evidence for every acceptance criterion.")

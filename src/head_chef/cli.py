@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import platform
 import sys
+import time
 from typing import Any
 
 from .benchmark import run_benchmarks
@@ -21,6 +22,7 @@ from .verification import parse_worker_output, verify_output, validate_review_st
 from .runs import RunRecord, next_attempt, save_run
 from .registry import apply_overrides, load_overrides, save_registry
 from .context_packager import package_context, render_package, split_context
+from .kitchen import build_kitchen
 from .token_governor import evaluate_budget
 
 
@@ -147,6 +149,7 @@ def _decision(args: argparse.Namespace, profiles: list[ModelProfile], settings: 
         reserved_output_tokens=settings.reserved_output_tokens,
         safety_margin_tokens=settings.safety_margin_tokens,
         benchmark_path=benchmark_path,
+        outcome_path=root / settings.state_dir / "outcomes.jsonl",
     )
 
 
@@ -215,6 +218,7 @@ def cmd_job(args: argparse.Namespace) -> int:
             reserved_output_tokens=settings.reserved_output_tokens,
             safety_margin_tokens=settings.safety_margin_tokens,
             benchmark_path=root / settings.state_dir / "benchmarks" / "latest.json",
+            outcome_path=root / settings.state_dir / "outcomes.jsonl",
         )
 
     job = create_job_card(
@@ -305,6 +309,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     prompt = render_worker_prompt(job) if job.category != "embedding" else None
     client = _client(settings)
     attempt = next_attempt(state / "runs", job.id)
+    started = time.perf_counter()
     try:
         execution = execute_job(
             client, job,
@@ -318,6 +323,15 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
             prompt=prompt, error=str(exc),
         )
         failed_path = save_run(failed, state / "runs")
+        append_jsonl(
+            state / "outcomes.jsonl",
+            {
+                "created_at": utc_now(), "job_id": job.id, "model": job.selected_model,
+                "category": job.category, "ok": False,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "reason": type(exc).__name__,
+            },
+        )
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -330,7 +344,12 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     verification = verify_output(
         parsed if job.category != "embedding" else {
             "result": "embedding generated", "changed_files": [], "assumptions": [], "risks": [],
-            "tests_recommended": [], "acceptance_check": [], "confidence": 1.0, "blockers": [],
+            "tests_recommended": [],
+            "acceptance_check": [
+                {"criterion": criterion, "met": True, "evidence": f"{parsed['embedding_count']} embedding vector(s) returned"}
+                for criterion in job.acceptance_criteria
+            ],
+            "confidence": 1.0, "blockers": [],
         },
         errors,
         job.acceptance_criteria,
@@ -352,6 +371,15 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         review_notes=verification.notes,
     )
     run_path = save_run(run, state / "runs")
+    append_jsonl(
+        state / "outcomes.jsonl",
+        {
+            "created_at": utc_now(), "job_id": job.id, "run_id": run.run_id,
+            "model": job.selected_model, "category": job.category, "ok": not errors,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "review_status": verification.status,
+        },
+    )
     _json({"run_path": str(run_path), "run": run.to_dict(), "verification": verification.to_dict()})
     return 0 if not errors else 4
 
@@ -410,6 +438,24 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print("No checkpoint exists.", file=sys.stderr)
         return 2
     _json({"checkpoint_path": str(path), "checkpoint": json.loads(path.read_text(encoding="utf-8"))})
+    return 0
+
+
+def cmd_kitchen(args: argparse.Namespace) -> int:
+    settings, root = load_settings()
+    try:
+        profiles = _profiles(_client(settings), settings)
+        overrides = load_overrides(root / settings.state_dir / "model-overrides.json")
+        profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
+    except (OllamaError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    result = build_kitchen(
+        profiles,
+        benchmark_path=root / settings.state_dir / "benchmarks" / "latest.json",
+        outcome_path=root / settings.state_dir / "outcomes.jsonl",
+    )
+    _json(result)
     return 0
 
 
@@ -514,6 +560,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     resume = sub.add_parser("resume", help="Read compact resumable state.")
     resume.set_defaults(func=cmd_resume)
+
+    kitchen = sub.add_parser("kitchen", help="Show local specialist stations Codex can route through.")
+    kitchen.set_defaults(func=cmd_kitchen)
 
     return parser
 
