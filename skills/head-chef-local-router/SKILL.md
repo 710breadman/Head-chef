@@ -24,6 +24,10 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 ```
 
 2. Always run `refresh`, then make `orchestrate` the first project task. Refresh uses machine-global digest history, strength-tests new/changed local models only in advertised capabilities, applies owner overrides, excludes cloud models, and rebuilds `.head-chef/kitchen.json`. Vision strength waits for an explicit safe fixture. New digests never inherit stale evidence.
+   - When the user says new cooks/models arrived, run `& $HeadChef new-cooks --project "C:\Projects\App"` instead. This performs refresh plus sprint reassignment and reports every station change.
+   - To reconsider stations without inventory work, run `& $HeadChef reassign --project "C:\Projects\App"`.
+   - On `new-cooks`, repeat `--model MODEL` to evaluate only named cooks; sprint seating still uses the full kitchen.
+   - On `reassign`, repeated `--model MODEL` creates a comparison-only candidate roster. Use `--apply-roster` only with explicit approval to replace the active plan.
 3. `orchestrate` must:
    - discover an existing JSON sprint manifest and referenced task contracts;
    - hash sprint sources;

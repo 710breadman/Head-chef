@@ -76,6 +76,14 @@ class OllamaClient:
     def show_model(self, model: str) -> dict[str, Any]:
         return self._request("POST", "/api/show", {"model": model})
 
+    def running_models(self) -> list[dict[str, Any]]:
+        data = self._request("GET", "/api/ps")
+        models = data.get("models", [])
+        return models if isinstance(models, list) else []
+
+    def unload_model(self, model: str) -> None:
+        self._request("POST", "/api/generate", {"model": model, "keep_alive": 0})
+
     def chat(
         self,
         model: str,

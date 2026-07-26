@@ -42,10 +42,16 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Explicit assigned/conditional/unfilled/abstained station states with routing score evidence and reasons.
 - Independent temperature-zero local station/scope review; disagreements are visible and station conflicts block dispatch.
 - Restart-safe sprint work ledger with explicit coordinator acceptance, dynamic dependency readiness, next-ready reporting, and bounded downstream handoffs.
+- One-command new-cook onboarding plus full/custom-roster sprint reassignment and timestamped assignment diffs.
+- Bounded ComfyUI visual workflow: loopback client, approved workflow templates, portable runtime control, immutable visual jobs, retry/cancel, output manifests, and Qwen3-VL verification.
 
 ## Validation completed in the isolated build environment
 
-- 82 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 97 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- Live onboarding detected Qwen 3.5 4B/9B and Qwen 3.6 27B during changing inventory; eight focused Qwen 3.5 strength cases completed with incremental checkpoints.
+- Qwen 3.5 4B passed analysis (94, 35.0s); its other focused cases and all Qwen 3.5 9B cases failed contract or timed out, so they did not displace proven primary stations. Vision remains pending a fixture.
+- Forced skill/runtime upgrade preserved the live benchmark file byte-for-byte (matching SHA-256); full-roster TBWL reassignment restored 45/45 assigned tasks.
+- Live concurrent refresh contention exposed a shared-evidence race; refresh now uses a machine-global single-writer PID lock with stale-lock recovery.
 - Live refresh on this host reconciled 12 installed entries, excluded the cloud tag, and rebuilt all seven local stations.
 - Live 4K forced split dispatched two children; one schema failure rerouted from Gemma e4b to Gemma 26B; synthesis then passed.
 - Live `work` on TBWL-011 used Qwen Coder, saved target-local evidence, and ran Gemma e4b as independent reviewer.
@@ -67,6 +73,9 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - `cook` auto-routing exercised all seven categories and selected the intended station.
 - Codex skill structure passed validation and a forward-use review.
 - Fresh skill install, safe upgrade backup, installed doctor/kitchen/cook, portable runtime import, and global outcome learning passed on this host.
+- ComfyUI focused unit suite passed: 6 tests.
+- Live portable ComfyUI SDXL generation passed on this host: immutable job `VJ-20260726-144347-1da36889` produced a hash-recorded 1024x1024 PNG in 16.1 seconds.
+- Qwen3-VL independently verified both visual acceptance criteria with confidence 1.0; Codex visual review agreed. A prior multi-object render was correctly rejected and preserved as evidence.
 
 ## Not yet proven
 
@@ -92,6 +101,7 @@ Save output, registry, one chat run, one vision run, and one embedding run. Do n
 
 - Repository license requires owner selection before a public release.
 - Clean-machine Windows acceptance and privileged reparse-path tests remain external acceptance work.
+- Additional ComfyUI checkpoints and workflow templates remain hardware acceptance work.
 
 ## Release status
 

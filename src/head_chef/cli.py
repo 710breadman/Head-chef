@@ -29,6 +29,23 @@ from .context_packager import package_context, render_package, split_context
 from .kitchen import build_kitchen
 from .orchestration import add_local_phase_analysis, build_sprint_plan, discover_sprint_file, load_sprint_tasks
 from .token_governor import evaluate_budget
+from .comfyui import (
+    ComfyUIClient,
+    ComfyUIError,
+    start_portable_comfyui,
+    stop_portable_comfyui,
+)
+from .visual import (
+    create_visual_job,
+    free_vram_mb,
+    load_approved_workflow,
+    load_visual_job,
+    model_usability,
+    run_visual_job,
+    save_visual_job,
+    validate_model_parameters,
+    workflow_root,
+)
 
 
 def _json(data: Any) -> None:
@@ -563,8 +580,60 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
-    settings, root = load_settings()
+    project = Path(args.project).resolve() if getattr(args, "project", None) else None
+    settings, root = load_settings(project)
     state = ensure_state(root, settings.state_dir)
+    lock_root = _global_evidence_path("") or state
+    lock_path = lock_root / "refresh.lock"
+    try:
+        lock_fd = _acquire_refresh_lock(lock_path)
+    except FileExistsError:
+        print(f"Another Head Chef refresh is running: {lock_path}", file=sys.stderr)
+        return 2
+    try:
+        return _cmd_refresh_unlocked(args, settings, root, state)
+    finally:
+        os.close(lock_fd)
+        lock_path.unlink(missing_ok=True)
+
+
+def _acquire_refresh_lock(path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(2):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(descriptor, f"{os.getpid()}\n{utc_now()}\n".encode("utf-8"))
+            return descriptor
+        except FileExistsError:
+            if attempt or _refresh_lock_is_live(path):
+                raise
+            path.unlink(missing_ok=True)
+    raise FileExistsError(path)
+
+
+def _refresh_lock_is_live(path: Path) -> bool:
+    try:
+        pid = int(path.read_text(encoding="utf-8").splitlines()[0])
+        if os.name == "nt":
+            import ctypes
+
+            process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not process:
+                return False
+            ctypes.windll.kernel32.CloseHandle(process)
+            return True
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _cmd_refresh_unlocked(
+    args: argparse.Namespace,
+    settings: Settings,
+    root: Path,
+    state: Path,
+) -> int:
     try:
         client = _client(settings)
         profiles = _profiles(client, settings)
@@ -577,29 +646,50 @@ def cmd_refresh(args: argparse.Namespace) -> int:
             save_registry(state / "registry.json", profiles)
 
         changed_names = set(changes["new"] + changes["updated"])
-        changed_profiles = [
-            profile for profile in profiles
-            if profile.name in changed_names and not profile.is_cloud
-        ]
         evaluation: dict[str, Any] | None = None
         skipped_strengths: list[dict[str, str]] = []
         benchmark_path = _global_evidence_path("benchmarks/latest.json") or state / "benchmarks" / "latest.json"
-        if changed_profiles and not args.no_evaluate:
-            assignments: dict[str, set[str]] = {}
-            for profile in changed_profiles:
-                strengths = set(profile.capabilities)
-                if "vision" in strengths and not args.image:
-                    strengths.remove("vision")
-                    skipped_strengths.append({"model": profile.name, "category": "vision", "reason": "--image required"})
-                assignments[profile.name] = strengths
+        evaluated = _evaluated_strengths(benchmark_path)
+        requested_evaluation_models = set(getattr(args, "model", []) or [])
+        pending_assignments: dict[str, set[str]] = {}
+        for profile in profiles:
+            if profile.is_cloud or (
+                requested_evaluation_models and profile.name not in requested_evaluation_models
+            ):
+                continue
+            strengths = set(profile.capabilities) & set(STRENGTH_CASES)
+            missing_strengths = {
+                category
+                for category in strengths
+                if (profile.name, profile.digest, category) not in evaluated
+            }
+            if profile.name in changed_names:
+                missing_strengths |= strengths
+            if "vision" in missing_strengths and not args.image:
+                missing_strengths.remove("vision")
+                skipped_strengths.append({
+                    "model": profile.name, "category": "vision", "reason": "--image required",
+                })
+            if missing_strengths:
+                pending_assignments[profile.name] = missing_strengths
+        pending_profiles = [
+            profile for profile in profiles
+            if profile.name in pending_assignments
+        ]
+        if pending_profiles and not args.no_evaluate:
+            benchmark_client = OllamaClient(
+                settings.ollama_url,
+                settings.request_timeout_seconds,
+                request_retries=0,
+            )
             evaluation = run_benchmarks(
-                client,
-                changed_profiles,
+                benchmark_client,
+                pending_profiles,
                 benchmark_path,
                 args.timeout or settings.request_timeout_seconds,
                 categories=set(STRENGTH_CASES),
                 vision_image=Path(args.image).resolve() if args.image else None,
-                assignments=assignments,
+                assignments=pending_assignments,
             )
         kitchen = build_kitchen(
             [profile for profile in profiles if not profile.is_cloud],
@@ -610,6 +700,27 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     except (OllamaError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    comfyui_inventory: dict[str, Any]
+    try:
+        comfyui_models = ComfyUIClient(
+            settings.comfyui_url,
+            args.timeout or min(settings.request_timeout_seconds, 10),
+        ).model_inventory()
+        comfyui_inventory = {
+            "schema_version": "1.0",
+            "updated_at": utc_now(),
+            "url": settings.comfyui_url,
+            "categories": comfyui_models,
+            "category_count": len(comfyui_models),
+            "model_count": sum(len(models) for models in comfyui_models.values()),
+        }
+        atomic_write_json(state / "visual" / "comfyui-models.json", comfyui_inventory)
+        comfyui_status = "available"
+        comfyui_error = None
+    except (ComfyUIError, ValueError) as exc:
+        comfyui_inventory = {}
+        comfyui_status = "unreachable"
+        comfyui_error = str(exc)
     _json({
         "status": "refreshed",
         "model_count": len(profiles),
@@ -617,9 +728,39 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         "evaluated_result_count": evaluation.get("current_result_count", 0) if evaluation else 0,
         "evaluation_artifact": evaluation.get("artifact_path") if evaluation else None,
         "skipped_strengths": skipped_strengths,
+        "pending_evaluations": [
+            {"model": model, "categories": sorted(categories)}
+            for model, categories in sorted(pending_assignments.items())
+        ] if args.no_evaluate else [],
         "kitchen": kitchen,
+        "comfyui": {
+            "status": comfyui_status,
+            "model_count": comfyui_inventory.get("model_count", 0),
+            "category_count": comfyui_inventory.get("category_count", 0),
+            "inventory_path": str(state / "visual" / "comfyui-models.json")
+            if comfyui_status == "available" else None,
+            "error": comfyui_error,
+        },
     })
     return 0
+
+
+def _evaluated_strengths(path: Path) -> set[tuple[str, str, str]]:
+    if not path.exists():
+        return set()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    results = value.get("results", []) if isinstance(value, dict) else []
+    return {
+        (str(item["model"]), str(item["model_digest"]), str(item["category"]))
+        for item in results
+        if isinstance(item, dict)
+        and item.get("model")
+        and item.get("model_digest")
+        and item.get("category")
+    }
 
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
@@ -677,11 +818,19 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         profiles = _profiles(client, settings)
         overrides = load_overrides(_evidence_path(project, settings, "model-overrides.json"))
         profiles = [apply_overrides(profile, overrides.get(profile.name, {})) for profile in profiles]
+        requested_models = list(getattr(args, "model", []) or [])
+        assignment_profiles = profiles
+        if requested_models:
+            installed = {profile.name for profile in profiles}
+            missing = sorted(set(requested_models) - installed)
+            if missing:
+                raise ValueError(f"Requested roster models are not installed: {', '.join(missing)}")
+            assignment_profiles = [profile for profile in profiles if profile.name in requested_models]
         manifest = discover_sprint_file(project, args.sprint_file)
         tasks, sources = load_sprint_tasks(project, manifest)
         plan = build_sprint_plan(
             tasks,
-            profiles,
+            assignment_profiles,
             benchmark_path=_evidence_path(project, settings, "benchmarks/latest.json"),
             outcome_path=_evidence_path(project, settings, "outcomes.jsonl"),
         )
@@ -716,8 +865,30 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "manifest": manifest.relative_to(project).as_posix(),
         "sources": sources,
     })
-    output = state / "orchestration" / "sprint-plan.json"
+    active_output = state / "orchestration" / "sprint-plan.json"
+    previous = None
+    if active_output.exists():
+        try:
+            previous = json.loads(active_output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = None
+    assignment_changes = _assignment_changes(previous, plan)
+    apply_plan = not requested_models or bool(getattr(args, "apply_roster", False))
+    output = active_output if apply_plan else (
+        state / "orchestration" / "candidate-plans"
+        / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
+    )
     atomic_write_json(output, plan)
+    comparison_path = state / "orchestration" / "reassignments" / (
+        f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
+    )
+    atomic_write_json(comparison_path, {
+        "contract_version": CONTRACT_VERSION,
+        "schema_version": "1.0",
+        "created_at": utc_now(),
+        "roster": [profile.name for profile in assignment_profiles],
+        "changes": assignment_changes,
+    })
     role_counts: dict[str, int] = {}
     assignment_status_counts: dict[str, int] = {}
     for task in plan["tasks"]:
@@ -729,6 +900,8 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     local_analysis = plan.get("local_phase_analysis", {})
     _json({
         "status": "planned",
+        "applied": apply_plan,
+        "active_plan_path": str(active_output),
         "plan_path": str(output),
         "manifest": plan["manifest"],
         "source_count": len(sources),
@@ -736,6 +909,10 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "actionable_task_ids": plan["actionable_task_ids"],
         "primary_role_counts": role_counts,
         "assignment_status_counts": assignment_status_counts,
+        "roster": [profile.name for profile in assignment_profiles],
+        "assignment_changes": assignment_changes,
+        "assignment_change_count": len(assignment_changes),
+        "comparison_path": str(comparison_path),
         "local_analysis_model": local_analysis.get("model"),
         "local_analysis_phases": len(local_analysis.get("reviews", [])),
         "local_analysis_errors": local_analysis.get("errors", []),
@@ -743,6 +920,311 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "local_station_disagreements": local_analysis.get("station_disagreement_count", 0),
         "local_scope_disagreements": local_analysis.get("scope_disagreement_count", 0),
     })
+    return 0
+
+
+def _assignment_changes(previous: object, current: dict[str, Any]) -> list[dict[str, Any]]:
+    previous_tasks = previous.get("tasks", []) if isinstance(previous, dict) else []
+    old = {
+        str(task.get("id")): task.get("primary_assignment", {})
+        for task in previous_tasks
+        if isinstance(task, dict) and task.get("id")
+    }
+    changes: list[dict[str, Any]] = []
+    for task in current.get("tasks", []):
+        if not isinstance(task, dict) or not task.get("id"):
+            continue
+        task_id = str(task["id"])
+        before = old.get(task_id)
+        after = task.get("primary_assignment", {})
+        if before is None:
+            changes.append({
+                "task_id": task_id, "change": "new_task",
+                "before": None, "after": _assignment_identity(after),
+            })
+            continue
+        before_identity = _assignment_identity(before)
+        after_identity = _assignment_identity(after)
+        if before_identity != after_identity:
+            changes.append({
+                "task_id": task_id, "change": "reassigned",
+                "before": before_identity, "after": after_identity,
+            })
+    return changes
+
+
+def _assignment_identity(value: object) -> dict[str, Any]:
+    assignment = value if isinstance(value, dict) else {}
+    return {
+        "station": assignment.get("station"),
+        "model": assignment.get("model"),
+        "status": assignment.get("status"),
+        "model_digest": assignment.get("model_digest"),
+    }
+
+
+def cmd_new_cooks(args: argparse.Namespace) -> int:
+    refresh_args = argparse.Namespace(
+        project=args.project,
+        no_evaluate=args.no_evaluate,
+        image=args.image,
+        timeout=args.timeout,
+        model=args.model,
+    )
+    refresh_code, refresh_payload = _captured_command(cmd_refresh, refresh_args)
+    if refresh_code != 0:
+        _json({"status": "refresh_failed", "refresh": refresh_payload})
+        return refresh_code
+    orchestrate_args = argparse.Namespace(
+        project=args.project,
+        sprint_file=args.sprint_file,
+        no_local_analysis=args.no_local_analysis,
+        timeout=args.timeout,
+        model=[],
+        apply_roster=False,
+    )
+    orchestrate_code, orchestrate_payload = _captured_command(cmd_orchestrate, orchestrate_args)
+    _json({
+        "status": "completed" if orchestrate_code == 0 else "reassignment_failed",
+        "refresh": refresh_payload,
+        "reassignment": orchestrate_payload,
+    })
+    return orchestrate_code
+
+
+def _visual_parameters(values: list[str]) -> dict[str, Any]:
+    parameters: dict[str, Any] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(f"Visual parameter must be NAME=VALUE: {item}")
+        name, raw = item.split("=", 1)
+        if not name or name in parameters:
+            raise ValueError(f"Duplicate or empty visual parameter: {name}")
+        try:
+            parameters[name] = json.loads(raw)
+        except json.JSONDecodeError:
+            parameters[name] = raw
+    return parameters
+
+
+def cmd_visual_templates(args: argparse.Namespace) -> int:
+    manifest = json.loads((workflow_root() / "manifest.json").read_text(encoding="utf-8"))
+    _json({"status": "available", "templates": manifest.get("templates", {})})
+    return 0
+
+
+def cmd_comfyui_doctor(args: argparse.Namespace) -> int:
+    settings, _ = load_settings(Path(args.project).resolve())
+    try:
+        client = ComfyUIClient(settings.comfyui_url, args.timeout or settings.request_timeout_seconds)
+        stats = client.system_stats()
+        models = client.model_inventory()
+    except (ComfyUIError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _json({
+        "status": "ready",
+        "url": settings.comfyui_url,
+        "free_vram_mb": free_vram_mb(stats),
+        "model_count": sum(len(items) for items in models.values()),
+        "model_categories": {name: len(items) for name, items in models.items()},
+        "usable_model_count": sum(1 for item in model_usability(models) if item["usable"]),
+        "templates": sorted(
+            json.loads((workflow_root() / "manifest.json").read_text(encoding="utf-8"))
+            .get("templates", {})
+        ),
+    })
+    return 0
+
+
+def cmd_comfyui_models(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, root = load_settings(project)
+    state = ensure_state(root, settings.state_dir)
+    try:
+        models = ComfyUIClient(
+            settings.comfyui_url,
+            args.timeout or settings.request_timeout_seconds,
+        ).model_inventory()
+    except (ComfyUIError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    inventory = {
+        "schema_version": "1.0",
+        "updated_at": utc_now(),
+        "url": settings.comfyui_url,
+        "categories": models,
+        "category_count": len(models),
+        "model_count": sum(len(items) for items in models.values()),
+        "usability": model_usability(models),
+    }
+    path = state / "visual" / "comfyui-models.json"
+    atomic_write_json(path, inventory)
+    _json({"status": "available", "inventory_path": str(path), **inventory})
+    return 0
+
+
+def cmd_comfyui_start(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, _ = load_settings(project)
+    state = ensure_state(project, settings.state_dir)
+    root_value = args.portable_root or settings.comfyui_portable_root
+    if not root_value:
+        print("Provide --portable-root or configure comfyui_portable_root.", file=sys.stderr)
+        return 2
+    runtime_path = state / "visual" / "comfyui-runtime.json"
+    log_path = state / "visual" / "comfyui.log"
+    try:
+        runtime = start_portable_comfyui(Path(root_value), runtime_path, log_path)
+        client = ComfyUIClient(settings.comfyui_url, 2)
+        deadline = time.monotonic() + args.wait
+        last_error = ""
+        while time.monotonic() < deadline:
+            try:
+                client.system_stats()
+                _json({"status": "ready", "runtime": runtime})
+                return 0
+            except ComfyUIError as exc:
+                last_error = str(exc)
+                time.sleep(1)
+    except (ComfyUIError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _json({"status": "starting", "runtime": runtime, "last_error": last_error})
+    return 1
+
+
+def cmd_comfyui_stop(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, _ = load_settings(project)
+    state = ensure_state(project, settings.state_dir)
+    try:
+        runtime = stop_portable_comfyui(state / "visual" / "comfyui-runtime.json")
+    except (ComfyUIError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _json({"status": "stopped", "runtime": runtime})
+    return 0
+
+
+def cmd_visual_job(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    settings, _ = load_settings(project)
+    state = ensure_state(project, settings.state_dir)
+    try:
+        parameters = _visual_parameters(args.param)
+        inventory = ComfyUIClient(
+            settings.comfyui_url,
+            min(settings.request_timeout_seconds, 10),
+        ).model_inventory()
+        validate_model_parameters(args.template, parameters, inventory)
+        job = create_visual_job(
+            project,
+            args.template,
+            parameters,
+            list(args.acceptance),
+            timeout_seconds=args.timeout,
+            max_attempts=args.max_attempts,
+            release_ollama=args.release_ollama,
+            verifier_model=args.verifier_model,
+        )
+        path = save_visual_job(job, state / "visual" / "jobs")
+    except (ComfyUIError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _json({"status": "ready", "job_path": str(path), "job": job.to_dict()})
+    return 0
+
+
+def cmd_visual_run(args: argparse.Namespace) -> int:
+    path = Path(args.job).resolve()
+    try:
+        job = load_visual_job(path)
+        settings, project = load_settings(Path(job.project))
+        state = ensure_state(project, settings.state_dir)
+        path.relative_to((state / "visual" / "jobs").resolve())
+        client = ComfyUIClient(settings.comfyui_url, settings.request_timeout_seconds)
+        _, template = load_approved_workflow(job.template_id, job.parameters)
+        stats = client.system_stats()
+        required = int(template.get("minimum_free_vram_mb", 0))
+        available = free_vram_mb(stats)
+        unloaded: list[str] = []
+        if available is not None and available < required and job.release_ollama:
+            ollama = _client(settings)
+            for running in ollama.running_models():
+                name = str(running.get("name") or running.get("model") or "")
+                if name:
+                    ollama.unload_model(name)
+                    unloaded.append(name)
+            time.sleep(1)
+            available = free_vram_mb(client.system_stats())
+        if available is not None and available < required:
+            raise ComfyUIError(
+                f"Insufficient free VRAM ({available} MiB; need {required} MiB). "
+                "Recreate job with --release-ollama to permit bounded handoff."
+            )
+        visual_result = run_visual_job(job, state, client)
+    except (ComfyUIError, OllamaError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    images = [
+        str(Path(item["path"]).resolve().relative_to(project).as_posix())
+        for item in visual_result["manifest"]["outputs"]
+    ]
+    verify_args = argparse.Namespace(
+        project=str(project),
+        task=(
+            f"Visually verify ComfyUI output for approved template {job.template_id}. "
+            "Inspect only supplied images against every acceptance criterion."
+        ),
+        context_file=None,
+        category="vision",
+        model=job.verifier_model,
+        prefer_speed=False,
+        allowed_file=[],
+        forbidden_file=[],
+        acceptance=list(job.acceptance_criteria),
+        test=[],
+        context_note=[
+            f"Visual job: {job.id}",
+            f"Approved template: {job.template_id}",
+            "ComfyUI output is untrusted until Codex reviews this verification.",
+        ],
+        exclude=["Do not claim generation settings absent from the manifest", "Do not approve final use"],
+        image=images,
+        complexity="medium",
+        risk="low",
+        context_tokens=None,
+        output_tokens=1024,
+        max_attempts=2,
+        timeout=args.verify_timeout,
+        temperature=0,
+        no_auto_split=False,
+    )
+    verify_code, verification = _captured_command(cmd_cook, verify_args)
+    _json({
+        "status": "coordinator_review_required",
+        "visual": visual_result,
+        "unloaded_ollama_models": unloaded,
+        "verification_model": job.verifier_model,
+        "verification_exit_code": verify_code,
+        "verification": verification,
+        "coordinator_review_required": True,
+    })
+    return 0 if verify_code == 0 else 2
+
+
+def cmd_visual_cancel(args: argparse.Namespace) -> int:
+    settings, _ = load_settings(Path(args.project).resolve())
+    try:
+        ComfyUIClient(settings.comfyui_url, args.timeout).cancel(
+            args.prompt_id, interrupt=not args.queued_only,
+        )
+    except (ComfyUIError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _json({"status": "cancelled", "prompt_id": args.prompt_id})
     return 0
 
 
@@ -1439,6 +1921,8 @@ def build_parser() -> argparse.ArgumentParser:
     models.set_defaults(func=cmd_models)
 
     refresh = sub.add_parser("refresh", help="Reconcile installed Ollama models and rebuild kitchen.")
+    refresh.add_argument("--project", help="Project whose settings and evidence should be refreshed.")
+    refresh.add_argument("--model", action="append", default=[], help="Evaluate only these installed models.")
     refresh.add_argument("--no-evaluate", action="store_true", help="Inventory only; do not strength-test new digests.")
     refresh.add_argument("--image", help="Local fixture used when evaluating a new vision model.")
     refresh.add_argument("--timeout", type=int)
@@ -1500,14 +1984,112 @@ def build_parser() -> argparse.ArgumentParser:
 
     orchestrate = sub.add_parser(
         "orchestrate",
-        aliases=["sprint-plan"],
+        aliases=["sprint-plan", "reassign"],
         help="Discover sprint contracts, understand tasks, and pre-assign local stations.",
     )
     orchestrate.add_argument("--project", default=".")
     orchestrate.add_argument("--sprint-file", help="Project-relative sprint manifest override.")
+    orchestrate.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        help="Limit assignment candidates to this installed model; repeat for a custom roster.",
+    )
+    orchestrate.add_argument(
+        "--apply-roster",
+        action="store_true",
+        help="Replace active sprint plan with the custom --model roster; default is comparison-only.",
+    )
     orchestrate.add_argument("--no-local-analysis", action="store_true")
     orchestrate.add_argument("--timeout", type=int)
     orchestrate.set_defaults(func=cmd_orchestrate)
+
+    new_cooks = sub.add_parser(
+        "new-cooks",
+        aliases=["onboard"],
+        help="Detect/evaluate new local models, rebuild kitchen, and reassign project sprints.",
+    )
+    new_cooks.add_argument("--project", default=".")
+    new_cooks.add_argument("--sprint-file", help="Project-relative sprint manifest override.")
+    new_cooks.add_argument(
+        "--model", action="append", default=[],
+        help="Evaluate only these new/changed cooks; sprint seating still considers the full kitchen.",
+    )
+    new_cooks.add_argument("--image", help="Safe local fixture for evaluating new vision models.")
+    new_cooks.add_argument("--no-evaluate", action="store_true")
+    new_cooks.add_argument("--no-local-analysis", action="store_true")
+    new_cooks.add_argument("--timeout", type=int)
+    new_cooks.set_defaults(func=cmd_new_cooks)
+
+    visual_templates = sub.add_parser(
+        "visual-templates",
+        help="List hash-approved fixed ComfyUI API workflow templates.",
+    )
+    visual_templates.set_defaults(func=cmd_visual_templates)
+
+    comfyui_doctor = sub.add_parser(
+        "comfyui-doctor",
+        help="Check loopback ComfyUI and report available VRAM/templates.",
+    )
+    comfyui_doctor.add_argument("--project", default=".")
+    comfyui_doctor.add_argument("--timeout", type=int, default=10)
+    comfyui_doctor.set_defaults(func=cmd_comfyui_doctor)
+
+    comfyui_models = sub.add_parser(
+        "comfyui-models",
+        help="List every model exposed by all ComfyUI model categories.",
+    )
+    comfyui_models.add_argument("--project", default=".")
+    comfyui_models.add_argument("--timeout", type=int, default=10)
+    comfyui_models.set_defaults(func=cmd_comfyui_models)
+
+    comfyui_start = sub.add_parser(
+        "comfyui-start",
+        help="Start a verified portable ComfyUI on loopback and record its PID/log.",
+    )
+    comfyui_start.add_argument("--project", default=".")
+    comfyui_start.add_argument("--portable-root")
+    comfyui_start.add_argument("--wait", type=int, default=60)
+    comfyui_start.set_defaults(func=cmd_comfyui_start)
+
+    comfyui_stop = sub.add_parser(
+        "comfyui-stop",
+        help="Stop only the portable ComfyUI process previously started by Head Chef.",
+    )
+    comfyui_stop.add_argument("--project", default=".")
+    comfyui_stop.set_defaults(func=cmd_comfyui_stop)
+
+    visual_job = sub.add_parser(
+        "visual-job",
+        help="Create an immutable bounded job from an approved ComfyUI template.",
+    )
+    visual_job.add_argument("--project", required=True)
+    visual_job.add_argument("--template", required=True)
+    visual_job.add_argument("--param", action="append", default=[], help="Approved NAME=VALUE parameter.")
+    visual_job.add_argument("--acceptance", action="append", default=[], required=True)
+    visual_job.add_argument("--timeout", type=int, default=600)
+    visual_job.add_argument("--max-attempts", type=int, default=2)
+    visual_job.add_argument("--release-ollama", action="store_true")
+    visual_job.add_argument("--verifier-model", default="qwen3-vl:8b-instruct")
+    visual_job.set_defaults(func=cmd_visual_job)
+
+    visual_run = sub.add_parser(
+        "visual-run",
+        help="Run a saved visual job through ComfyUI, then Qwen3-VL verification.",
+    )
+    visual_run.add_argument("--job", required=True)
+    visual_run.add_argument("--verify-timeout", type=int, default=180)
+    visual_run.set_defaults(func=cmd_visual_run)
+
+    visual_cancel = sub.add_parser(
+        "visual-cancel",
+        help="Cancel a queued/running ComfyUI prompt.",
+    )
+    visual_cancel.add_argument("--project", default=".")
+    visual_cancel.add_argument("--prompt-id", required=True)
+    visual_cancel.add_argument("--queued-only", action="store_true")
+    visual_cancel.add_argument("--timeout", type=int, default=10)
+    visual_cancel.set_defaults(func=cmd_visual_cancel)
 
     work = sub.add_parser(
         "work",

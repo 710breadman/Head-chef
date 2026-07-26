@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -403,6 +404,32 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(args.command, "refresh")
         self.assertFalse(args.no_evaluate)
 
+    def test_refresh_lock_rejects_live_writer_and_recovers_stale_lock(self):
+        from head_chef.cli import _acquire_refresh_lock
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "refresh.lock"
+            path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                _acquire_refresh_lock(path)
+            path.write_text("99999999\n", encoding="utf-8")
+            descriptor = _acquire_refresh_lock(path)
+            os.close(descriptor)
+
+    def test_evaluated_strengths_are_digest_and_category_specific(self):
+        from head_chef.cli import _evaluated_strengths
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "latest.json"
+            path.write_text(json.dumps({"results": [
+                {"model": "cook", "model_digest": "new", "category": "coding", "ok": True},
+                {"model": "cook", "model_digest": "old", "category": "analysis", "ok": False},
+            ]}), encoding="utf-8")
+            strengths = _evaluated_strengths(path)
+        self.assertIn(("cook", "new", "coding"), strengths)
+        self.assertIn(("cook", "old", "analysis"), strengths)
+        self.assertNotIn(("cook", "new", "analysis"), strengths)
+
     def test_cook_retries_then_creates_capability_checked_fallback_job(self):
         args = build_parser().parse_args([
             "cook", "--project", ".", "--task", "Analyze", "--max-attempts", "3",
@@ -523,6 +550,9 @@ class ContractTests(unittest.TestCase):
             )
             self.assertTrue(Path(payload["artifact_path"]).exists())
         self.assertEqual(len(payload["results"]), 2)
+        self.assertFalse(payload["in_progress"])
+        self.assertEqual(payload["completed_case_count"], 1)
+        self.assertEqual(payload["total_case_count"], 1)
         embedding = next(item for item in payload["results"] if item["category"] == "embedding")
         self.assertEqual(embedding["model_digest"], "abc")
 

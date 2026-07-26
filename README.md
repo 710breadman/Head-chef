@@ -12,7 +12,7 @@ It does not replace Codex, secretly edit files, or invent a complicated autonomo
 
 ## Current v0.2 capabilities
 
-- Detects locally installed Ollama models.
+- Detects locally installed Ollama models and every model category exposed by ComfyUI.
 - Keeps a digest-aware model registry; owner overrides are validated and provenance-marked.
 - Routes through separate chat, multimodal chat, and embedding executors.
 - Explains every routing score and supports a manual override.
@@ -98,7 +98,9 @@ State and evidence are recorded
 |---|---|
 | `doctor` | Check Python-facing Ollama connectivity and local configuration. |
 | `models` | List installed models and inferred capabilities. |
+| `comfyui-models` | Inventory all ComfyUI model categories and save the result. |
 | `refresh` | Diff machine-global names/digests, strength-test new local models, and rebuild the kitchen. |
+| `new-cooks` / `onboard` | Detect and evaluate new cooks, rebuild the kitchen, re-seat sprint stations, and report changes. |
 | `route` / `plan` | Recommend a model and explain the decision. |
 | `budget` | Estimate context usage and split pressure. |
 | `job` / `delegate` | Package approved files and create bounded job card(s). |
@@ -108,7 +110,7 @@ State and evidence are recorded
 | `checkpoint` / `resume` | Save or read compact Codex-facing handoff state. |
 | `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
 | `cook` | Route, package, dispatch, validate, and record one bounded task. |
-| `orchestrate` / `sprint-plan` | Discover sprint files, analyze every phase locally, and save role assignments. |
+| `orchestrate` / `sprint-plan` / `reassign` | Discover sprint files, analyze every phase locally, save assignments, and compare with the prior plan. |
 | `work` / `run-plan` | Dispatch dependency-ready sprint tasks to preassigned local stations. |
 
 ## Kitchen routing
@@ -125,7 +127,15 @@ Cloud-tag models are excluded by default. Manual overrides cannot assign a model
 
 Installed skills seed new projects with the machine's digest-matched strength evidence. Each dispatch records metadata-only outcomes both in the project and in the private global runtime, so later projects start with improved routing without sharing prompts or responses.
 
-On first use, the skill runs `refresh`, then `orchestrate`. Refresh detects new, changed, and removed Ollama models without downloading anything. Orchestration deterministically parses sprint contracts; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` preserves dependency order.
+On first use, the skill runs `refresh`, then `orchestrate`. Refresh detects new, changed, and removed Ollama models and inventories every model category exposed by a running ComfyUI, without downloading anything. An offline ComfyUI is reported but does not block Ollama refresh. Orchestration deterministically parses sprint contracts; a local planning model adds needs and risk analysis for every phase. The resulting `.head-chef/orchestration/sprint-plan.json` preserves dependency order.
+
+When models change, one command handles the full flow:
+
+```powershell
+head-chef new-cooks --project "C:\Projects\App"
+```
+
+It evaluates only new/changed digests, checkpoints every completed case for safe resume, rebuilds the kitchen, regenerates the sprint plan, and writes a reassignment comparison under `.head-chef/orchestration/reassignments/`. A machine-global single-writer lock prevents concurrent refreshes from colliding; stale crash locks recover automatically. Use `--image` when a new vision cook should be tested. `--model MODEL` limits which new cooks are evaluated, while seating still considers the full kitchen. To re-seat against current evidence without inventory work, run `head-chef reassign --project "C:\Projects\App"`. Repeated `--model MODEL` makes a comparison-only candidate roster; add `--apply-roster` only when that restricted plan should replace the active plan.
 
 Sprint assignments are explicit: `assigned`, `conditional` (for example, vision needs an image), `unfilled` (no eligible installed model), or `abstained` (owner/legal/destructive decision). Every task stores a structured profile, assignment reason, score evidence, risk, tool needs, and whether local work is full or advisory.
 
@@ -143,7 +153,7 @@ Install optional Codex skill:
 .\scripts\Install-CodexSkill.ps1
 ```
 
-This installs a repository-independent private runtime, the skill, and a stable launcher under your Codex home. Restart Codex, then invoke `$head-chef-local-router`. Use `-Force` to upgrade while preserving timestamped skill and runtime backups under `backups\head-chef`, outside skill discovery. Repository `AGENTS.md` also defines direct Head Chef behavior.
+This installs a repository-independent private runtime, the skill, and a stable launcher under your Codex home. Restart Codex, then invoke `$head-chef-local-router`. Use `-Force` to upgrade; registry, benchmarks, benchmark runs, overrides, and outcomes are carried into the upgraded runtime, while a full timestamped backup remains under `backups\head-chef`. Repository `AGENTS.md` also defines direct Head Chef behavior.
 | `init` | Create project-local `.head-chef` control files. |
 
 ## Project control documents

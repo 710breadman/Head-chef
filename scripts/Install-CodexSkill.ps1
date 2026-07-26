@@ -53,8 +53,16 @@ try {
 
     New-Item -ItemType Directory -Path (Join-Path $RuntimeStaging "src") | Out-Null
     Copy-Item -LiteralPath (Join-Path $Root "src\head_chef") -Destination (Join-Path $RuntimeStaging "src\head_chef") -Recurse
+    Copy-Item -LiteralPath (Join-Path $Root "workflows") -Destination (Join-Path $RuntimeStaging "workflows") -Recurse
     $RuntimeState = Join-Path $RuntimeStaging "state"
     New-Item -ItemType Directory -Path (Join-Path $RuntimeState "benchmarks") | Out-Null
+    if ($RuntimeBackup) {
+        $PreviousState = Join-Path $RuntimeBackup "state"
+        if (Test-Path -LiteralPath $PreviousState -PathType Container) {
+            Copy-Item -Path (Join-Path $PreviousState "*") -Destination $RuntimeState -Recurse -Force
+            Write-Host "Restored previous runtime evidence into upgraded runtime."
+        }
+    }
     $EvidenceFiles = @(
         @("benchmarks\latest.json", "benchmarks\latest.json"),
         @("registry.json", "registry.json"),
@@ -63,8 +71,11 @@ try {
     )
     foreach ($Evidence in $EvidenceFiles) {
         $EvidenceSource = Join-Path (Join-Path $Root ".head-chef") $Evidence[0]
-        if (Test-Path -LiteralPath $EvidenceSource -PathType Leaf) {
-            $EvidenceDestination = Join-Path $RuntimeState $Evidence[1]
+        $EvidenceDestination = Join-Path $RuntimeState $Evidence[1]
+        if (
+            (Test-Path -LiteralPath $EvidenceSource -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $EvidenceDestination -PathType Leaf)
+        ) {
             Copy-Item -LiteralPath $EvidenceSource -Destination $EvidenceDestination
         }
     }

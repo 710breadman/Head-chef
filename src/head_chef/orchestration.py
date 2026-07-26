@@ -339,12 +339,17 @@ def build_sprint_plan(
                 (candidate for candidate in decision.candidates if candidate.model == decision.selected_model),
                 None,
             )
+            selected_profile = next(
+                (profile for profile in profiles if profile.name == decision.selected_model),
+                None,
+            )
             required_inputs = ["image"] if station == "vision" else []
             status = "unfilled" if not decision.selected_model else "conditional" if required_inputs else "assigned"
             return {
                 "station": station,
                 "role": ROLE_NAMES[station],
                 "model": decision.selected_model,
+                "model_digest": selected_profile.digest if selected_profile else None,
                 "confidence": decision.confidence,
                 "review_required": decision.coordinator_review_required,
                 "status": status,
@@ -364,6 +369,7 @@ def build_sprint_plan(
             "station": None,
             "role": "coordinator-only decision",
             "model": None,
+            "model_digest": None,
             "confidence": 1.0,
             "review_required": True,
             "status": "abstained",

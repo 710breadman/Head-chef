@@ -6,7 +6,14 @@ from contextlib import redirect_stdout
 import io
 from unittest.mock import patch
 
-from head_chef.cli import _existing_plan_files, build_parser, cmd_work
+from head_chef.cli import (
+    _assignment_changes,
+    _existing_plan_files,
+    build_parser,
+    cmd_new_cooks,
+    cmd_orchestrate,
+    cmd_work,
+)
 from head_chef.storage import ensure_state
 from head_chef.models import ModelProfile
 from head_chef.ollama import OllamaResponse
@@ -262,6 +269,51 @@ class SprintOrchestrationTests(unittest.TestCase):
         args = build_parser().parse_args(["orchestrate", "--project", "C:/project"])
         self.assertEqual(args.command, "orchestrate")
         self.assertFalse(args.no_local_analysis)
+
+    def test_reassign_accepts_custom_model_roster(self):
+        args = build_parser().parse_args([
+            "reassign", "--project", "C:/project", "--model", "coder", "--model", "reviewer",
+        ])
+        self.assertEqual(args.model, ["coder", "reviewer"])
+        self.assertFalse(args.apply_roster)
+        self.assertIs(args.func, cmd_orchestrate)
+
+    def test_assignment_diff_detects_model_digest_and_station_changes(self):
+        previous = {"tasks": [{
+            "id": "T-1",
+            "primary_assignment": {
+                "station": "coding", "model": "old", "model_digest": "d1", "status": "assigned",
+            },
+        }]}
+        current = {"tasks": [{
+            "id": "T-1",
+            "primary_assignment": {
+                "station": "coding", "model": "new", "model_digest": "d2", "status": "assigned",
+            },
+        }]}
+        changes = _assignment_changes(previous, current)
+        self.assertEqual(changes[0]["change"], "reassigned")
+        self.assertEqual(changes[0]["before"]["model"], "old")
+        self.assertEqual(changes[0]["after"]["model_digest"], "d2")
+
+    def test_new_cooks_runs_refresh_then_reassignment(self):
+        args = build_parser().parse_args([
+            "new-cooks", "--project", "C:/project", "--model", "new-coder",
+        ])
+        output = io.StringIO()
+        with patch(
+            "head_chef.cli._captured_command",
+            side_effect=[
+                (0, {"status": "refreshed", "changes": {"new": ["new-coder"]}}),
+                (0, {"status": "planned", "assignment_change_count": 3}),
+            ],
+        ) as captured, redirect_stdout(output):
+            code = cmd_new_cooks(args)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(captured.call_args_list[0].args[1].model, ["new-coder"])
+        self.assertEqual(captured.call_args_list[1].args[1].model, [])
 
     def test_work_dispatches_ready_task_to_preassigned_local_model(self):
         with tempfile.TemporaryDirectory() as temp:

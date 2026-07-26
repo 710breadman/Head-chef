@@ -174,13 +174,6 @@ def run_benchmarks(
     assignments: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     requested = categories or set(STRENGTH_CASES)
-    results = [
-        benchmark_model(client, profile, timeout_seconds, category, vision_image=vision_image)
-        for profile in profiles
-        for category in STRENGTH_CASES
-        if category in requested and category in profile.capabilities
-        and (assignments is None or category in assignments.get(profile.name, set()))
-    ]
     prior_results: list[dict[str, Any]] = []
     if output_path.exists():
         try:
@@ -189,6 +182,38 @@ def run_benchmarks(
                 prior_results = [item for item in prior["results"] if isinstance(item, dict)]
         except (OSError, json.JSONDecodeError):
             prior_results = []
+    cases = [
+        (profile, category)
+        for profile in profiles
+        for category in STRENGTH_CASES
+        if category in requested and category in profile.capabilities
+        and (assignments is None or category in assignments.get(profile.name, set()))
+    ]
+    results: list[dict[str, Any]] = []
+    for profile, category in cases:
+        result = benchmark_model(
+            client, profile, timeout_seconds, category, vision_image=vision_image,
+        )
+        results.append(result)
+        checkpoint_keys = {
+            (item.get("model"), item.get("model_digest"), item.get("category"))
+            for item in results
+        }
+        checkpoint_results = [
+            item for item in prior_results
+            if (item.get("model"), item.get("model_digest"), item.get("category")) not in checkpoint_keys
+        ] + results
+        atomic_write_json(output_path, {
+            "created_at": utc_now(),
+            "schema_version": "3.0",
+            "benchmark": SUITE_VERSION,
+            "warning": "Strength-specific local evidence only; never a universal leaderboard.",
+            "results": checkpoint_results,
+            "current_result_count": len(results),
+            "in_progress": len(results) < len(cases),
+            "completed_case_count": len(results),
+            "total_case_count": len(cases),
+        })
     current_keys = {
         (item.get("model"), item.get("model_digest"), item.get("category"))
         for item in results
@@ -204,6 +229,9 @@ def run_benchmarks(
         "warning": "Strength-specific local evidence only; never a universal leaderboard.",
         "results": merged_results,
         "current_result_count": len(results),
+        "in_progress": False,
+        "completed_case_count": len(results),
+        "total_case_count": len(cases),
     }
     snapshot = output_path.parent / "runs" / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
     payload["artifact_path"] = str(snapshot)

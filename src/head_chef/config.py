@@ -10,6 +10,8 @@ from typing import Any
 @dataclass(slots=True)
 class Settings:
     ollama_url: str = "http://127.0.0.1:11434"
+    comfyui_url: str = "http://127.0.0.1:8188"
+    comfyui_portable_root: str = ""
     state_dir: str = ".head-chef"
     default_context_tokens: int = 8192
     reserved_output_tokens: int = 2048
@@ -61,6 +63,12 @@ def load_settings(start: Path | None = None) -> tuple[Settings, Path]:
     env_url = os.getenv("HEAD_CHEF_OLLAMA_URL")
     if env_url:
         settings.ollama_url = env_url.rstrip("/")
+    comfyui_url = os.getenv("HEAD_CHEF_COMFYUI_URL")
+    if comfyui_url:
+        settings.comfyui_url = comfyui_url.rstrip("/")
+    portable_root = os.getenv("HEAD_CHEF_COMFYUI_PORTABLE_ROOT")
+    if portable_root:
+        settings.comfyui_portable_root = portable_root
 
     resolve_state_dir(root, settings.state_dir)
 

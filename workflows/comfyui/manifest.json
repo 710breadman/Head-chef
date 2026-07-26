@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "templates": {
+    "sdxl-text-to-image": {
+      "file": "sdxl-text-to-image.json",
+      "sha256": "440f668f568faf8e6d596c3c2e7dd94a4513a489f80e406d5b6025581dd243d8",
+      "description": "Fixed SDXL-style checkpoint, sampler, decode, and save graph.",
+      "minimum_free_vram_mb": 4096,
+      "variables": {
+        "checkpoint": {
+          "type": "string",
+          "max_length": 255,
+          "model_category": "checkpoints"
+        },
+        "prompt": {
+          "type": "string",
+          "max_length": 4000
+        },
+        "negative_prompt": {
+          "type": "string",
+          "max_length": 2000,
+          "default": ""
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "default": 0
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 80,
+          "default": 30
+        },
+        "cfg": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 7
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 2048,
+          "default": 1024
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 2048,
+          "default": 1024
+        }
+      }
+    }
+  }
+}
