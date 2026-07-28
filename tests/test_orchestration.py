@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 import io
@@ -356,7 +357,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             ])
             output = io.StringIO()
             with patch(
-                "head_chef.cli.sprint_commands._captured_command",
+                "head_chef.cli.sprint_commands._orchestrate_core",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ) as captured, redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -364,7 +365,7 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["outline_status"], "found")
         self.assertTrue(payload["planned"])
-        self.assertEqual(captured.call_args.args[1].sprint_file, "SPRINTS.json")
+        self.assertEqual(captured.call_args.args[0].sprint_file, "SPRINTS.json")
 
     def test_skill_check_finds_nested_roadmap_outline(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -377,7 +378,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             ])
             output = io.StringIO()
             with patch(
-                "head_chef.cli.sprint_commands._captured_command",
+                "head_chef.cli.sprint_commands._orchestrate_core",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ) as captured, redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -386,7 +387,7 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["outline_status"], "found")
         self.assertEqual(
-            captured.call_args.args[1].sprint_file,
+            captured.call_args.args[0].sprint_file,
             "packages/app/planning/roadmap.json",
         )
 
@@ -400,7 +401,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             args = build_parser().parse_args(["sprint-check", "--project", str(root)])
             output = io.StringIO()
             with patch("builtins.input", return_value="yes"), patch(
-                "head_chef.cli.sprint_commands._captured_command",
+                "head_chef.cli.sprint_commands._orchestrate_core",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ), redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -453,18 +454,18 @@ class SprintOrchestrationTests(unittest.TestCase):
         ])
         output = io.StringIO()
         with patch(
-            "head_chef.cli.roster_commands._captured_command",
-            side_effect=[
-                (0, {"status": "refreshed", "changes": {"new": ["new-coder"]}}),
-                (0, {"status": "planned", "assignment_change_count": 3}),
-            ],
-        ) as captured, redirect_stdout(output):
+            "head_chef.cli.roster_commands._refresh_core",
+            return_value=(0, {"status": "refreshed", "changes": {"new": ["new-coder"]}}),
+        ) as refresh_core, patch(
+            "head_chef.cli.roster_commands._orchestrate_core",
+            return_value=(0, {"status": "planned", "assignment_change_count": 3}),
+        ) as orchestrate_core, redirect_stdout(output):
             code = cmd_new_cooks(args)
         payload = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "completed")
-        self.assertEqual(captured.call_args_list[0].args[1].model, ["new-coder"])
-        self.assertEqual(captured.call_args_list[1].args[1].model, [])
+        self.assertEqual(refresh_core.call_args.args[0].model, ["new-coder"])
+        self.assertEqual(orchestrate_core.call_args.args[0].model, [])
 
     def test_work_dispatches_ready_task_to_preassigned_local_model(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -483,15 +484,58 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, {"status": "completed"})) as captured, \
+            with patch("head_chef.cli.sprint_commands._cook_core", return_value=(0, {"status": "completed"})) as captured, \
                  redirect_stdout(output):
                 code = cmd_work(args)
-            cook_args = captured.call_args.args[1]
+            cook_args = captured.call_args.args[0]
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(cook_args.model, "coder")
         self.assertEqual(cook_args.allowed_file, ["src/a.py"])
         self.assertEqual(payload["task_count"], 1)
+
+    def test_work_parallel_dispatch_preserves_result_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = ensure_state(root)
+            plan_path = state / "orchestration" / "sprint-plan.json"
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(json.dumps({"tasks": [
+                {
+                    "id": "T-1", "title": "First", "objective": "Do first",
+                    "actionable": True, "dependencies": [], "evidence": [],
+                    "acceptance_criteria": ["works"], "expected_files": [],
+                    "primary_assignment": {"station": "coding", "model": "coder-a", "status": "assigned"},
+                },
+                {
+                    "id": "T-2", "title": "Second", "objective": "Do second",
+                    "actionable": True, "dependencies": [], "evidence": [],
+                    "acceptance_criteria": ["works"], "expected_files": [],
+                    "primary_assignment": {"station": "coding", "model": "coder-b", "status": "assigned"},
+                },
+            ]}), encoding="utf-8")
+            args = build_parser().parse_args([
+                "work", "--project", str(root), "--all-ready", "--parallel", "2",
+            ])
+
+            # The first task's dispatch takes longer than the second's, so if the pool did not
+            # preserve submission order in the output (e.g. by naively collecting whichever
+            # future finished first), T-2 would end up before T-1 in the results.
+            def slower_for_first_task(cook_args):
+                if cook_args.model == "coder-a":
+                    time.sleep(0.05)
+                return 0, {"status": "completed", "model": cook_args.model}
+
+            output = io.StringIO()
+            with patch(
+                "head_chef.cli.sprint_commands._cook_core", side_effect=slower_for_first_task,
+            ) as cook_core, redirect_stdout(output):
+                code = cmd_work(args)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(cook_core.call_count, 2)
+        self.assertEqual([item["task_id"] for item in payload["results"]], ["T-1", "T-2"])
+        self.assertEqual([item["model"] for item in payload["results"]], ["coder-a", "coder-b"])
 
     def test_work_converts_advisory_task_to_honest_guidance_contract(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -511,10 +555,10 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, {"status": "completed"})) as captured, \
+            with patch("head_chef.cli.sprint_commands._cook_core", return_value=(0, {"status": "completed"})) as captured, \
                  redirect_stdout(output):
                 code = cmd_work(args)
-            cook_args = captured.call_args.args[1]
+            cook_args = captured.call_args.args[0]
         self.assertEqual(code, 0)
         self.assertEqual(cook_args.acceptance, [
             "Provide concrete bounded guidance for coordinator action",
@@ -554,7 +598,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             first_args = build_parser().parse_args([
                 "work", "--project", str(root), "--task-id", "T-1",
             ])
-            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, primary_payload)), \
+            with patch("head_chef.cli.sprint_commands._cook_core", return_value=(0, primary_payload)), \
                  redirect_stdout(io.StringIO()):
                 self.assertEqual(cmd_work(first_args), 0)
             ledger = json.loads(
@@ -566,10 +610,10 @@ class SprintOrchestrationTests(unittest.TestCase):
                 "work", "--project", str(root), "--accept-task", "T-1",
             ])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, primary_payload)) as captured, \
+            with patch("head_chef.cli.sprint_commands._cook_core", return_value=(0, primary_payload)) as captured, \
                  redirect_stdout(output):
                 self.assertEqual(cmd_work(second_args), 0)
-            cook_args = captured.call_args.args[1]
+            cook_args = captured.call_args.args[0]
             payload = json.loads(output.getvalue())
         self.assertTrue(any(
             note.startswith("Accepted dependency T-1 run run-one")
@@ -604,7 +648,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._cook_core") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)
@@ -656,7 +700,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._cook_core") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)
@@ -683,7 +727,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._cook_core") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)

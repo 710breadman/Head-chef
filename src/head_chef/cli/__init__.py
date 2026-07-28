@@ -11,7 +11,6 @@ from ..benchmark import STRENGTH_CASES
 # functions and shared helpers directly from `head_chef.cli`.
 from ._shared import (
     _append_outcome,
-    _captured_command,
     _client,
     _context_text,
     _decision,
@@ -25,15 +24,20 @@ from ._shared import (
     _worker_run_succeeded,
 )
 from .job_commands import (
-    _cook_split_jobs,
+    _cook_core,
+    _cook_split_jobs_core,
+    _dispatch_core,
     _dispatch_saved_job,
+    _job_core,
     cmd_cook,
     cmd_dispatch,
     cmd_job,
     cmd_review,
 )
 from .visual_commands import (
+    _visual_job_core,
     _visual_parameters,
+    _visual_run_core,
     cmd_comfyui_doctor,
     cmd_comfyui_models,
     cmd_comfyui_start,
@@ -49,11 +53,14 @@ from .sprint_commands import (
     _completed_sprint_tasks,
     _create_sprint_outline,
     _dependency_handoff,
+    _dispatch_one_task,
     _dispatch_visual_task,
     _existing_plan_files,
     _load_work_ledger,
     _local_support_review,
+    _orchestrate_core,
     _primary_run_from_payload,
+    _TaskOutcome,
     cmd_orchestrate,
     cmd_sprint_check,
     cmd_work,
@@ -62,6 +69,7 @@ from .roster_commands import (
     _acquire_refresh_lock,
     _cmd_refresh_unlocked,
     _evaluated_strengths,
+    _refresh_core,
     _refresh_lock_is_live,
     cmd_budget,
     cmd_checkpoint,
@@ -340,6 +348,17 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--temperature", type=float, default=0.1)
     work.add_argument("--complexity", choices=["low", "medium", "high"], default="high")
     work.add_argument("--risk", choices=["low", "medium", "high"], default="medium")
+    work.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help=(
+            "Dispatch up to N dependency-ready tasks concurrently (e.g. --all-ready --parallel 3 "
+            "on a multi-GPU box). Head Chef only avoids serializing its own requests; Ollama's own "
+            "scheduler (OLLAMA_NUM_PARALLEL, OLLAMA_SCHED_SPREAD, CUDA_VISIBLE_DEVICES) decides how "
+            "concurrent requests are placed across GPUs. Default 1 (sequential)."
+        ),
+    )
     work.set_defaults(func=cmd_work)
 
     return parser

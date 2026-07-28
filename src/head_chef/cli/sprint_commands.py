@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import secrets
@@ -20,12 +22,12 @@ from ..router import RouteRequest, route
 from ..storage import atomic_write_json, compact_timestamp, ensure_state, utc_now
 from ..visual import GENERATION_STATION_OUTPUT_TYPES
 
-from ._shared import _captured_command, _client, _evidence_path, _json, _profiles
-from .job_commands import _dispatch_saved_job, cmd_cook
-from .visual_commands import cmd_visual_job, cmd_visual_run
+from ._shared import _client, _evidence_path, _json, _profiles
+from .job_commands import _cook_core, _dispatch_saved_job
+from .visual_commands import _visual_job_core, _visual_run_core
 
 
-def cmd_orchestrate(args: argparse.Namespace) -> int:
+def _orchestrate_core(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     project = Path(args.project).resolve()
     settings, _ = load_settings(project)
     state = ensure_state(project, settings.state_dir)
@@ -71,7 +73,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             )
     except (OllamaError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
-        return 1
+        return 1, None
 
     plan.update({
         "contract_version": CONTRACT_VERSION,
@@ -114,7 +116,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         assignment_status = primary_assignment["status"]
         assignment_status_counts[assignment_status] = assignment_status_counts.get(assignment_status, 0) + 1
     local_analysis = plan.get("local_phase_analysis", {})
-    _json({
+    payload = {
         "status": "planned",
         "applied": apply_plan,
         "active_plan_path": str(active_output),
@@ -135,8 +137,15 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "local_assignment_disagreements": local_analysis.get("assignment_disagreement_count", 0),
         "local_station_disagreements": local_analysis.get("station_disagreement_count", 0),
         "local_scope_disagreements": local_analysis.get("scope_disagreement_count", 0),
-    })
-    return 0
+    }
+    return 0, payload
+
+
+def cmd_orchestrate(args: argparse.Namespace) -> int:
+    code, payload = _orchestrate_core(args)
+    if payload is not None:
+        _json(payload)
+    return code
 
 
 def _create_sprint_outline(project: Path, explicit: str | None = None) -> Path:
@@ -192,7 +201,7 @@ def cmd_sprint_check(args: argparse.Namespace) -> int:
         model=[],
         apply_roster=False,
     )
-    plan_code, plan_payload = _captured_command(cmd_orchestrate, orchestrate_args)
+    plan_code, plan_payload = _orchestrate_core(orchestrate_args)
     _json({
         "status": "planned" if plan_code == 0 else "plan_failed",
         "outline_status": outline_status,
@@ -351,14 +360,202 @@ def _dispatch_visual_task(
         release_ollama=False,
         verifier_model="qwen3-vl:8b-instruct",
     )
-    job_code, job_payload = _captured_command(cmd_visual_job, job_args)
+    job_code, job_payload = _visual_job_core(job_args)
     if job_code != 0 or not isinstance(job_payload, dict) or not job_payload.get("job_path"):
         return job_code or 2, {"status": "visual_job_failed", "result": job_payload}
     run_args = argparse.Namespace(
         project=str(project), job=job_payload["job_path"], verify_timeout=args.timeout,
     )
-    run_code, run_payload = _captured_command(cmd_visual_run, run_args)
+    run_code, run_payload = _visual_run_core(run_args)
     return run_code, {"status": "coordinator_review_required", "job": job_payload, "run": run_payload}
+
+
+@dataclass(slots=True)
+class _TaskOutcome:
+    item_result: dict[str, Any]
+    ledger_entry: dict[str, Any] | None
+    code: int
+
+
+def _dispatch_one_task(
+    task: dict[str, Any],
+    project: Path,
+    settings: Settings,
+    state: Path,
+    ledger: dict[str, Any],
+    artifact: Path,
+    args: argparse.Namespace,
+) -> _TaskOutcome:
+    """Dispatch one dependency-ready sprint task. Only reads `ledger` (for dependency handoff
+    notes) — never mutates it — so this is safe to run concurrently across tasks from a thread
+    pool; the caller applies the returned ledger_entry after every task in the batch completes.
+    """
+    assignment = task.get("primary_assignment", {})
+    category = assignment.get("station")
+    model = assignment.get("model")
+    assignment_status = assignment.get("status", "assigned")
+    local_review = task.get("local_assignment_review", {})
+    if (
+        isinstance(local_review, dict)
+        and local_review.get("station_agrees") is False
+        and not args.accept_assignment_review
+    ):
+        return _TaskOutcome(
+            {
+                "task_id": task.get("id"),
+                "status": "assignment_review_required",
+                "deterministic_station": category,
+                "local_recommended_station": local_review.get("recommended_primary_station"),
+                "reason": "Deterministic profile and local planning reviewer disagree. Review before dispatch.",
+            },
+            None,
+            2,
+        )
+    if assignment_status == "abstained":
+        return _TaskOutcome(
+            {
+                "task_id": task.get("id"),
+                "status": "coordinator_required",
+                "reason": assignment.get("reason"),
+            },
+            None,
+            2,
+        )
+    if assignment_status == "conditional" and not args.image:
+        return _TaskOutcome(
+            {
+                "task_id": task.get("id"),
+                "status": "input_required",
+                "required_inputs": assignment.get("required_inputs", []),
+                "reason": "Supply --image for the assigned vision station.",
+            },
+            None,
+            2,
+        )
+    if category in GENERATION_STATION_OUTPUT_TYPES:
+        code, visual_payload = _dispatch_visual_task(project, settings, task, assignment, args)
+        return _TaskOutcome(
+            {
+                "task_id": task.get("id"),
+                "model": model,
+                "category": category,
+                "exit_code": code,
+                "result": visual_payload,
+            },
+            {
+                "status": "coordinator_review_required" if code == 0 else "attention_required",
+                "updated_at": utc_now(),
+                "model": model,
+                "category": category,
+                "run_id": None,
+                "work_artifact": str(artifact),
+                "result_summary": None,
+                "exit_code": code,
+                "support_review_exit_code": None,
+            },
+            code,
+        )
+    if category not in STRENGTH_CASES or not isinstance(model, str) or not model:
+        return _TaskOutcome(
+            {
+                "task_id": task.get("id"),
+                "status": "no_eligible_model",
+                "reason": assignment.get("reason"),
+            },
+            None,
+            2,
+        )
+    task_text = (
+        f"Sprint {task.get('id')}: {task.get('title')}\n"
+        f"Objective: {task.get('objective')}\n"
+        "Produce the maximum useful bounded local-worker result. Do not claim commands ran."
+    )
+    cook_args = argparse.Namespace(
+        project=str(project),
+        task=task_text,
+        context_file=None,
+        category=category,
+        model=model,
+        prefer_speed=False,
+        allowed_file=_existing_plan_files(project, list(task.get("expected_files") or [])),
+        forbidden_file=[],
+        acceptance=(
+            [
+                "Provide concrete bounded guidance for coordinator action",
+                "Map guidance to every sprint acceptance criterion",
+            ]
+            if task.get("task_profile", {}).get("local_scope") == "advisory"
+            else list(task.get("acceptance_criteria") or [])
+        ),
+        test=[],
+        context_note=[
+            f"Dependencies: {', '.join(task.get('dependencies') or []) or 'none'}",
+            f"Prior evidence: {'; '.join(task.get('evidence') or []) or 'none'}",
+            *_dependency_handoff(task, ledger),
+        ],
+        exclude=["No unrelated sprint work", "Do not execute commands or modify files"],
+        image=list(args.image),
+        complexity=args.complexity,
+        risk=args.risk,
+        context_tokens=args.context_tokens,
+        output_tokens=args.output_tokens,
+        max_attempts=args.max_attempts,
+        timeout=args.timeout,
+        temperature=args.temperature,
+        no_auto_split=False,
+    )
+    code, payload = _cook_core(cook_args)
+    item_result = {
+        "task_id": task.get("id"),
+        "model": model,
+        "category": category,
+        "allowed_files": cook_args.allowed_file,
+        "exit_code": code,
+        "result": payload,
+    }
+    reviewer = next(
+        (
+            assignment for assignment in task.get("supporting_assignments", [])
+            if isinstance(assignment, dict)
+            and assignment.get("station") == "analysis"
+            and assignment.get("model")
+        ),
+        None,
+    )
+    combined_code = code
+    if code == 0 and payload and reviewer:
+        review_code, review_payload = _local_support_review(
+            project, settings, state, task, payload, str(reviewer["model"]), args,
+        )
+        item_result["support_review"] = review_payload
+        item_result["support_review_exit_code"] = review_code
+        combined_code = max(combined_code, review_code)
+    run = _primary_run_from_payload(payload)
+    result_summary = None
+    if isinstance(run, dict) and isinstance(run.get("response"), dict):
+        raw_summary = run["response"].get("result")
+        if isinstance(raw_summary, str):
+            result_summary = raw_summary[:4000]
+    successful = item_result["exit_code"] == 0 and item_result.get("support_review_exit_code", 0) == 0
+    needs_review = bool(assignment.get("review_required", True))
+    ledger_entry = {
+        "status": (
+            "accepted"
+            if successful and not needs_review
+            else "coordinator_review_required"
+            if successful
+            else "attention_required"
+        ),
+        "updated_at": utc_now(),
+        "model": model,
+        "category": category,
+        "run_id": run.get("run_id") if isinstance(run, dict) else None,
+        "work_artifact": str(artifact),
+        "result_summary": result_summary,
+        "exit_code": item_result["exit_code"],
+        "support_review_exit_code": item_result.get("support_review_exit_code"),
+    }
+    return _TaskOutcome(item_result, ledger_entry, combined_code)
 
 
 def cmd_work(args: argparse.Namespace) -> int:
@@ -437,166 +634,27 @@ def cmd_work(args: argparse.Namespace) -> int:
         selected = selected[:1]
 
     artifact = state / "orchestration" / "work-runs" / f"{compact_timestamp()}-{secrets.token_hex(4)}.json"
+    max_workers = max(1, int(getattr(args, "parallel", 1) or 1))
+    if max_workers > 1 and len(selected) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [
+                pool.submit(_dispatch_one_task, task, project, settings, state, ledger, artifact, args)
+                for task in selected
+            ]
+            outcomes = [future.result() for future in futures]
+    else:
+        outcomes = [
+            _dispatch_one_task(task, project, settings, state, ledger, artifact, args)
+            for task in selected
+        ]
+
     results: list[dict[str, Any]] = []
     final_code = 0
-    for task in selected:
-        assignment = task.get("primary_assignment", {})
-        category = assignment.get("station")
-        model = assignment.get("model")
-        assignment_status = assignment.get("status", "assigned")
-        local_review = task.get("local_assignment_review", {})
-        if (
-            isinstance(local_review, dict)
-            and local_review.get("station_agrees") is False
-            and not args.accept_assignment_review
-        ):
-            results.append({
-                "task_id": task.get("id"),
-                "status": "assignment_review_required",
-                "deterministic_station": category,
-                "local_recommended_station": local_review.get("recommended_primary_station"),
-                "reason": "Deterministic profile and local planning reviewer disagree. Review before dispatch.",
-            })
-            final_code = max(final_code, 2)
-            continue
-        if assignment_status == "abstained":
-            results.append({
-                "task_id": task.get("id"),
-                "status": "coordinator_required",
-                "reason": assignment.get("reason"),
-            })
-            final_code = max(final_code, 2)
-            continue
-        if assignment_status == "conditional" and not args.image:
-            results.append({
-                "task_id": task.get("id"),
-                "status": "input_required",
-                "required_inputs": assignment.get("required_inputs", []),
-                "reason": "Supply --image for the assigned vision station.",
-            })
-            final_code = max(final_code, 2)
-            continue
-        if category in GENERATION_STATION_OUTPUT_TYPES:
-            code, visual_payload = _dispatch_visual_task(project, settings, task, assignment, args)
-            results.append({
-                "task_id": task.get("id"),
-                "model": model,
-                "category": category,
-                "exit_code": code,
-                "result": visual_payload,
-            })
-            final_code = max(final_code, code)
-            ledger["tasks"][str(task.get("id"))] = {
-                "status": "coordinator_review_required" if code == 0 else "attention_required",
-                "updated_at": utc_now(),
-                "model": model,
-                "category": category,
-                "run_id": None,
-                "work_artifact": str(artifact),
-                "result_summary": None,
-                "exit_code": code,
-                "support_review_exit_code": None,
-            }
-            continue
-        if category not in STRENGTH_CASES or not isinstance(model, str) or not model:
-            results.append({
-                "task_id": task.get("id"),
-                "status": "no_eligible_model",
-                "reason": assignment.get("reason"),
-            })
-            final_code = max(final_code, 2)
-            continue
-        task_text = (
-            f"Sprint {task.get('id')}: {task.get('title')}\n"
-            f"Objective: {task.get('objective')}\n"
-            "Produce the maximum useful bounded local-worker result. Do not claim commands ran."
-        )
-        cook_args = argparse.Namespace(
-            project=str(project),
-            task=task_text,
-            context_file=None,
-            category=category,
-            model=model,
-            prefer_speed=False,
-            allowed_file=_existing_plan_files(project, list(task.get("expected_files") or [])),
-            forbidden_file=[],
-            acceptance=(
-                [
-                    "Provide concrete bounded guidance for coordinator action",
-                    "Map guidance to every sprint acceptance criterion",
-                ]
-                if task.get("task_profile", {}).get("local_scope") == "advisory"
-                else list(task.get("acceptance_criteria") or [])
-            ),
-            test=[],
-            context_note=[
-                f"Dependencies: {', '.join(task.get('dependencies') or []) or 'none'}",
-                f"Prior evidence: {'; '.join(task.get('evidence') or []) or 'none'}",
-                *_dependency_handoff(task, ledger),
-            ],
-            exclude=["No unrelated sprint work", "Do not execute commands or modify files"],
-            image=list(args.image),
-            complexity=args.complexity,
-            risk=args.risk,
-            context_tokens=args.context_tokens,
-            output_tokens=args.output_tokens,
-            max_attempts=args.max_attempts,
-            timeout=args.timeout,
-            temperature=args.temperature,
-            no_auto_split=False,
-        )
-        code, payload = _captured_command(cmd_cook, cook_args)
-        item_result = {
-            "task_id": task.get("id"),
-            "model": model,
-            "category": category,
-            "allowed_files": cook_args.allowed_file,
-            "exit_code": code,
-            "result": payload,
-        }
-        reviewer = next(
-            (
-                assignment for assignment in task.get("supporting_assignments", [])
-                if isinstance(assignment, dict)
-                and assignment.get("station") == "analysis"
-                and assignment.get("model")
-            ),
-            None,
-        )
-        if code == 0 and payload and reviewer:
-            review_code, review_payload = _local_support_review(
-                project, settings, state, task, payload, str(reviewer["model"]), args,
-            )
-            item_result["support_review"] = review_payload
-            item_result["support_review_exit_code"] = review_code
-            final_code = max(final_code, review_code)
-        run = _primary_run_from_payload(payload)
-        result_summary = None
-        if isinstance(run, dict) and isinstance(run.get("response"), dict):
-            raw_summary = run["response"].get("result")
-            if isinstance(raw_summary, str):
-                result_summary = raw_summary[:4000]
-        successful = code == 0 and item_result.get("support_review_exit_code", 0) == 0
-        needs_review = bool(assignment.get("review_required", True))
-        ledger["tasks"][str(task.get("id"))] = {
-            "status": (
-                "accepted"
-                if successful and not needs_review
-                else "coordinator_review_required"
-                if successful
-                else "attention_required"
-            ),
-            "updated_at": utc_now(),
-            "model": model,
-            "category": category,
-            "run_id": run.get("run_id") if isinstance(run, dict) else None,
-            "work_artifact": str(artifact),
-            "result_summary": result_summary,
-            "exit_code": code,
-            "support_review_exit_code": item_result.get("support_review_exit_code"),
-        }
-        results.append(item_result)
-        final_code = max(final_code, code)
+    for task, outcome in zip(selected, outcomes):
+        results.append(outcome.item_result)
+        final_code = max(final_code, outcome.code)
+        if outcome.ledger_entry is not None:
+            ledger["tasks"][str(task.get("id"))] = outcome.ledger_entry
     atomic_write_json(artifact, {
         "contract_version": CONTRACT_VERSION,
         "schema_version": "1.0",

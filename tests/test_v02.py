@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from urllib import error as url_error
@@ -15,7 +16,7 @@ from head_chef.models import ModelProfile
 from head_chef.models import infer_capabilities
 from head_chef.ollama import OllamaClient, OllamaResponse
 from head_chef.registry import apply_overrides, reconcile_registry
-from head_chef.cli import _append_outcome, _captured_command, _cook_split_jobs, _evidence_path, _json, _public_job, _public_run, _safe_project_text, build_parser, cmd_cook
+from head_chef.cli import _append_outcome, _cook_split_jobs_core, _evidence_path, _json, _public_job, _public_run, _safe_project_text, build_parser, cmd_cook
 from head_chef.kitchen import build_kitchen
 from head_chef.benchmark import _chat_score, benchmark_model, run_benchmarks
 from contextlib import redirect_stdout
@@ -442,16 +443,16 @@ class ContractTests(unittest.TestCase):
             "job": {"id": "j2", "selected_model": "fallback", "fallback_models": []},
             "path": "j2.json", "child_job_paths": [],
         }
-        calls = [
-            (0, first),
+        job_calls = [(0, first), (0, second)]
+        dispatch_calls = [
             (1, None),
             (4, {"verification": {"status": "needs_revision"}}),
-            (0, second),
             (0, {"verification": {"status": "accepted"}}),
         ]
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as temp, \
-             patch("head_chef.cli.job_commands._captured_command", side_effect=calls) as captured, \
+             patch("head_chef.cli.job_commands._job_core", side_effect=job_calls) as job_core, \
+             patch("head_chef.cli.job_commands._dispatch_core", side_effect=dispatch_calls) as dispatch_core, \
              patch("head_chef.cli.job_commands.load_settings", return_value=(Settings(), Path(temp))), \
              patch("head_chef.cli.job_commands.append_jsonl") as journal, \
              redirect_stdout(output):
@@ -460,7 +461,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["job"]["id"], "j2")
         self.assertEqual(payload["recovery"][1]["next_model"], "fallback")
-        self.assertEqual(captured.call_count, 5)
+        self.assertEqual(job_core.call_count, 2)
+        self.assertEqual(dispatch_core.call_count, 3)
         journal.assert_called_once()
 
     def test_split_cook_dispatches_children_then_evidence_fed_synthesis(self):
@@ -485,31 +487,20 @@ class ContractTests(unittest.TestCase):
                 "run": {"response": VALID_RESULT},
                 "verification": {"status": "accepted"},
             }
-            output = io.StringIO()
             with patch("head_chef.cli.job_commands.load_settings", return_value=(Settings(), root)), \
                  patch("head_chef.cli.job_commands._dispatch_saved_job", side_effect=[
                      (0, child_result, [{"attempt": 1, "exit_code": 0}]),
                      (0, synthesis_result, [{"attempt": 1, "exit_code": 0}]),
-                 ]), redirect_stdout(output):
-                code = _cook_split_jobs(
+                 ]):
+                code, payload = _cook_split_jobs_core(
                     args,
                     {"job": {"id": "parent", "project": str(root)}},
                     [str(child_path), str(synthesis_path)],
                 )
-            payload = json.loads(output.getvalue())
             ready = load_job_card(Path(payload["synthesis_job_path"]))
         self.assertEqual(code, 0)
         self.assertIn('"job_id": "child"', ready.context_text)
         self.assertNotEqual(ready.id, "synth")
-
-    def test_command_capture_keeps_json_contract_parseable(self):
-        def command(_):
-            _json({"value": 3})
-            return 0
-
-        code, payload = _captured_command(command, argparse.Namespace())
-        self.assertEqual(code, 0)
-        self.assertEqual(payload["value"], 3)
 
     def test_json_contract_escapes_unicode_for_windows_console(self):
         output = io.StringIO()
@@ -647,6 +638,24 @@ class ContractTests(unittest.TestCase):
         _, _, verbose_ok = _chat_score(verbose, expected, 1, {}, "planning")
         self.assertTrue(good_ok)
         self.assertFalse(verbose_ok)
+
+
+class GpuDetectionTests(unittest.TestCase):
+    def test_detects_gpu_count_from_nvidia_smi(self):
+        from head_chef.cli.roster_commands import _detected_gpu_count
+
+        fake_result = subprocess.CompletedProcess(
+            args=["nvidia-smi", "-L"], returncode=0,
+            stdout="GPU 0: NVIDIA RTX 4090 (UUID: GPU-aaa)\nGPU 1: NVIDIA RTX 4090 (UUID: GPU-bbb)\n",
+        )
+        with patch("head_chef.cli.roster_commands.subprocess.run", return_value=fake_result):
+            self.assertEqual(_detected_gpu_count(), 2)
+
+    def test_gpu_detection_fails_closed_without_nvidia_smi(self):
+        from head_chef.cli.roster_commands import _detected_gpu_count
+
+        with patch("head_chef.cli.roster_commands.subprocess.run", side_effect=FileNotFoundError()):
+            self.assertIsNone(_detected_gpu_count())
 
 
 if __name__ == "__main__":

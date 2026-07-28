@@ -29,8 +29,8 @@ from ..visual import (
     workflow_root,
 )
 
-from ._shared import _captured_command, _client, _json
-from .job_commands import cmd_cook
+from ._shared import _client, _json
+from .job_commands import _cook_core
 
 
 def _visual_parameters(values: list[str]) -> dict[str, Any]:
@@ -148,7 +148,7 @@ def cmd_comfyui_stop(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_visual_job(args: argparse.Namespace) -> int:
+def _visual_job_core(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     project = Path(args.project).resolve()
     settings, _ = load_settings(project)
     state = ensure_state(project, settings.state_dir)
@@ -172,12 +172,18 @@ def cmd_visual_job(args: argparse.Namespace) -> int:
         path = save_visual_job(job, state / "visual" / "jobs")
     except (ComfyUIError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
-        return 2
-    _json({"status": "ready", "job_path": str(path), "job": job.to_dict()})
-    return 0
+        return 2, None
+    return 0, {"status": "ready", "job_path": str(path), "job": job.to_dict()}
 
 
-def cmd_visual_run(args: argparse.Namespace) -> int:
+def cmd_visual_job(args: argparse.Namespace) -> int:
+    code, payload = _visual_job_core(args)
+    if payload is not None:
+        _json(payload)
+    return code
+
+
+def _visual_run_core(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     path = Path(args.job).resolve()
     try:
         job = load_visual_job(path)
@@ -207,7 +213,7 @@ def cmd_visual_run(args: argparse.Namespace) -> int:
         visual_result = run_visual_job(job, state, client)
     except (ComfyUIError, OllamaError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
-        return 1
+        return 1, None
 
     images = [
         str(Path(item["path"]).resolve().relative_to(project).as_posix())
@@ -243,8 +249,8 @@ def cmd_visual_run(args: argparse.Namespace) -> int:
         temperature=0,
         no_auto_split=False,
     )
-    verify_code, verification = _captured_command(cmd_cook, verify_args)
-    _json({
+    verify_code, verification = _cook_core(verify_args)
+    payload = {
         "status": "coordinator_review_required",
         "visual": visual_result,
         "unloaded_ollama_models": unloaded,
@@ -252,8 +258,15 @@ def cmd_visual_run(args: argparse.Namespace) -> int:
         "verification_exit_code": verify_code,
         "verification": verification,
         "coordinator_review_required": True,
-    })
-    return 0 if verify_code == 0 else 2
+    }
+    return (0 if verify_code == 0 else 2), payload
+
+
+def cmd_visual_run(args: argparse.Namespace) -> int:
+    code, payload = _visual_run_core(args)
+    if payload is not None:
+        _json(payload)
+    return code
 
 
 def cmd_visual_cancel(args: argparse.Namespace) -> int:

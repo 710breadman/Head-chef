@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
-import io
 import json
 import os
 from pathlib import Path
@@ -140,11 +138,3 @@ def _worker_run_succeeded(
 ) -> bool:
     blockers = parsed.get("blockers", []) if isinstance(parsed, dict) else []
     return not validation_errors and acceptance_complete and not blockers
-
-
-def _captured_command(function, args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
-    output = io.StringIO()
-    with redirect_stdout(output):
-        code = int(function(args))
-    text = output.getvalue().strip()
-    return code, json.loads(text) if text else None

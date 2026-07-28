@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
 from typing import Any
 
@@ -19,7 +20,6 @@ from ..storage import atomic_write_json, ensure_state, utc_now
 from ..token_governor import evaluate_budget
 
 from ._shared import (
-    _captured_command,
     _client,
     _context_text,
     _decision,
@@ -28,7 +28,7 @@ from ._shared import (
     _json,
     _profiles,
 )
-from .sprint_commands import cmd_orchestrate
+from .sprint_commands import _orchestrate_core
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -41,6 +41,22 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _detected_gpu_count() -> int | None:
+    """Best-effort GPU count via nvidia-smi, purely to suggest a --parallel value. Returns None
+    (not 0/1) when undetectable, e.g. no NVIDIA GPU, driver not installed, or nvidia-smi missing
+    from PATH — Ollama itself remains the authority on what it can actually schedule."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    count = sum(1 for line in result.stdout.splitlines() if line.strip().startswith("GPU "))
+    return count or None
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     try:
         settings, root = load_settings()
@@ -48,6 +64,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         return 2
 
+    gpu_count = _detected_gpu_count()
     report: dict[str, Any] = {
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -56,6 +73,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "ollama_reachable": False,
         "ollama_version": None,
         "installed_models": 0,
+        "detected_gpu_count": gpu_count,
+        "suggested_work_parallel": gpu_count if gpu_count else 1,
         "warnings": [],
     }
     try:
@@ -71,6 +90,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     if sys.version_info < (3, 11):
         report["warnings"].append("Python 3.11 or newer is required.")
+    if gpu_count and gpu_count > 1:
+        report["warnings"].append(
+            f"{gpu_count} GPUs detected. For concurrent local dispatch, use "
+            f"'work --all-ready --parallel {gpu_count}' and configure Ollama's own scheduler "
+            "(OLLAMA_NUM_PARALLEL, OLLAMA_SCHED_SPREAD) to spread models across them — "
+            "Head Chef only avoids serializing its own requests, Ollama decides GPU placement."
+        )
     _json(report)
     return 0 if report["ollama_reachable"] else 1
 
@@ -130,7 +156,7 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_refresh(args: argparse.Namespace) -> int:
+def _refresh_core(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     project = Path(args.project).resolve() if getattr(args, "project", None) else None
     settings, root = load_settings(project)
     state = ensure_state(root, settings.state_dir)
@@ -140,12 +166,19 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         lock_fd = _acquire_refresh_lock(lock_path)
     except FileExistsError:
         print(f"Another Head Chef refresh is running: {lock_path}", file=sys.stderr)
-        return 2
+        return 2, None
     try:
         return _cmd_refresh_unlocked(args, settings, root, state)
     finally:
         os.close(lock_fd)
         lock_path.unlink(missing_ok=True)
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    code, payload = _refresh_core(args)
+    if payload is not None:
+        _json(payload)
+    return code
 
 
 def _acquire_refresh_lock(path: Path) -> int:
@@ -184,7 +217,7 @@ def _cmd_refresh_unlocked(
     settings: Settings,
     root: Path,
     state: Path,
-) -> int:
+) -> tuple[int, dict[str, Any] | None]:
     try:
         client = _client(settings)
         profiles = _profiles(client, settings)
@@ -250,7 +283,7 @@ def _cmd_refresh_unlocked(
         atomic_write_json(state / "kitchen.json", kitchen)
     except (OllamaError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
-        return 1
+        return 1, None
     comfyui_inventory: dict[str, Any]
     try:
         comfyui_models = ComfyUIClient(
@@ -272,7 +305,7 @@ def _cmd_refresh_unlocked(
         comfyui_inventory = {}
         comfyui_status = "unreachable"
         comfyui_error = str(exc)
-    _json({
+    payload = {
         "status": "refreshed",
         "model_count": len(profiles),
         "changes": changes,
@@ -292,8 +325,8 @@ def _cmd_refresh_unlocked(
             if comfyui_status == "available" else None,
             "error": comfyui_error,
         },
-    })
-    return 0
+    }
+    return 0, payload
 
 
 def _evaluated_strengths(path: Path) -> set[tuple[str, str, str]]:
@@ -368,7 +401,7 @@ def cmd_new_cooks(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         model=args.model,
     )
-    refresh_code, refresh_payload = _captured_command(cmd_refresh, refresh_args)
+    refresh_code, refresh_payload = _refresh_core(refresh_args)
     if refresh_code != 0:
         _json({"status": "refresh_failed", "refresh": refresh_payload})
         return refresh_code
@@ -380,7 +413,7 @@ def cmd_new_cooks(args: argparse.Namespace) -> int:
         model=[],
         apply_roster=False,
     )
-    orchestrate_code, orchestrate_payload = _captured_command(cmd_orchestrate, orchestrate_args)
+    orchestrate_code, orchestrate_payload = _orchestrate_core(orchestrate_args)
     _json({
         "status": "completed" if orchestrate_code == 0 else "reassignment_failed",
         "refresh": refresh_payload,
