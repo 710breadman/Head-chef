@@ -169,6 +169,12 @@ def build_parser() -> argparse.ArgumentParser:
     cook.add_argument("--timeout", type=int)
     cook.add_argument("--temperature", type=float, default=0.1)
     cook.add_argument("--no-auto-split", action="store_true", help="Create child jobs without dispatching them.")
+    cook.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Dispatch up to N auto-split child jobs concurrently (they're independent context chunks by construction).",
+    )
     cook.set_defaults(func=cmd_cook)
 
     dispatch = sub.add_parser("dispatch", help="Send one saved job card to its selected Ollama model.")

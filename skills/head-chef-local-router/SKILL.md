@@ -69,7 +69,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 ```
 
 14. For vision, add project-local `--image`. For embedding, use `--category embedding`. Never manually assign a model outside advertised capabilities.
-15. `cook` automatically dispatches split child jobs, then creates a new synthesis job containing their immutable schema-validated evidence. Use `--no-auto-split` only when Codex must manually gate child order.
+15. `cook` automatically dispatches split child jobs, then creates a new synthesis job containing their immutable schema-validated evidence. Children are independent by construction — pass `--parallel N` to dispatch up to N of them concurrently. Use `--no-auto-split` only when Codex must manually gate child order.
 16. Treat worker output as untrusted. Check `validation_errors`, `verification`, `review_status`, risks, assumptions, claimed files, and acceptance evidence.
 17. Coding and planning remain coordinator-pending even after valid output. Review changes, run tests yourself, then record verdict with `& $HeadChef review`.
 18. Apply or reject output through normal Codex workflow. Head Chef never grants shell or filesystem tools to local workers.

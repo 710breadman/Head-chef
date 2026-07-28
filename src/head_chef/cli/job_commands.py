@@ -11,6 +11,7 @@ from multiple threads at once.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 from pathlib import Path
 import secrets
@@ -500,11 +501,23 @@ def _cook_split_jobs_core(
 ) -> tuple[int, dict[str, Any] | None]:
     settings, root = load_settings(Path(parent["job"]["project"]))
     state = ensure_state(root, settings.state_dir)
+    dispatch_child_paths = child_paths[:-1]
+
+    # Split children are independent bounded context chunks by construction (that's the point
+    # of splitting), so dispatch them concurrently instead of one at a time when --parallel > 1.
+    max_workers = max(1, int(getattr(args, "parallel", 1) or 1))
+    if max_workers > 1 and len(dispatch_child_paths) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_dispatch_saved_job, path, args) for path in dispatch_child_paths]
+            dispatch_results = [future.result() for future in futures]
+    else:
+        dispatch_results = [_dispatch_saved_job(path, args) for path in dispatch_child_paths]
+
     child_evidence: list[dict[str, Any]] = []
     child_runs: list[dict[str, Any]] = []
-    for child_path in child_paths[:-1]:
+    first_failure_code: int | None = None
+    for child_path, (code, result, attempts) in zip(dispatch_child_paths, dispatch_results):
         child = load_job_card(Path(child_path))
-        code, result, attempts = _dispatch_saved_job(child_path, args)
         child_runs.append({
             "job_id": child.id,
             "model": child.selected_model,
@@ -513,20 +526,24 @@ def _cook_split_jobs_core(
             "run_path": result.get("run_path") if result else None,
         })
         if code != 0 or not result:
-            payload = {
-                "status": "child_failed",
-                "stage": "split_dispatch",
-                "job": parent["job"],
-                "child_runs": child_runs,
-                "next_action": "Inspect immutable child attempts; rerun cook after correcting local runtime/model issue.",
-            }
-            return code or 1, payload
+            if first_failure_code is None:
+                first_failure_code = code or 1
+            continue
         child_evidence.append({
             "job_id": child.id,
             "model": child.selected_model,
             "response": result["run"]["response"],
             "verification": result["verification"],
         })
+    if first_failure_code is not None:
+        payload = {
+            "status": "child_failed",
+            "stage": "split_dispatch",
+            "job": parent["job"],
+            "child_runs": child_runs,
+            "next_action": "Inspect immutable child attempts; rerun cook after correcting local runtime/model issue.",
+        }
+        return first_failure_code, payload
 
     placeholder = load_job_card(Path(child_paths[-1]))
     synthesis_context = json.dumps(

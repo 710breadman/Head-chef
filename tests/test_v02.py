@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 from urllib import error as url_error
 
@@ -501,6 +502,52 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('"job_id": "child"', ready.context_text)
         self.assertNotEqual(ready.id, "synth")
+
+    def test_split_cook_dispatches_children_in_parallel_preserving_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = ensure_state(root)
+            child_a = JobCard("child-a", str(root), "part a", selected_model="m", model_digest="d")
+            child_b = JobCard("child-b", str(root), "part b", selected_model="m", model_digest="d")
+            synthesis = JobCard(
+                "synth", str(root), "synthesize", selected_model="m", model_digest="d",
+                context_limit_tokens=8192, output_limit_tokens=512, dependencies=["child-a", "child-b"],
+            )
+            child_a_path = save_job_card(child_a, state / "jobs")
+            child_b_path = save_job_card(child_b, state / "jobs")
+            synthesis_path = save_job_card(synthesis, state / "jobs")
+            args = build_parser().parse_args([
+                "cook", "--project", str(root), "--task", "task", "--parallel", "2",
+            ])
+            synthesis_result = {
+                "run_path": "synthesis-run.json",
+                "run": {"response": VALID_RESULT},
+                "verification": {"status": "accepted"},
+            }
+
+            def dispatch_side_effect(path, _args):
+                if path == str(child_a_path):
+                    time.sleep(0.05)
+                    return 0, {
+                        "run_path": "run-a.json", "run": {"response": VALID_RESULT},
+                        "verification": {"status": "accepted"},
+                    }, [{"attempt": 1, "exit_code": 0}]
+                if path == str(child_b_path):
+                    return 0, {
+                        "run_path": "run-b.json", "run": {"response": VALID_RESULT},
+                        "verification": {"status": "accepted"},
+                    }, [{"attempt": 1, "exit_code": 0}]
+                return 0, synthesis_result, [{"attempt": 1, "exit_code": 0}]
+
+            with patch("head_chef.cli.job_commands.load_settings", return_value=(Settings(), root)), \
+                 patch("head_chef.cli.job_commands._dispatch_saved_job", side_effect=dispatch_side_effect):
+                code, payload = _cook_split_jobs_core(
+                    args,
+                    {"job": {"id": "parent", "project": str(root)}},
+                    [str(child_a_path), str(child_b_path), str(synthesis_path)],
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual([entry["job_id"] for entry in payload["child_runs"]], ["child-a", "child-b"])
 
     def test_json_contract_escapes_unicode_for_windows_console(self):
         output = io.StringIO()
