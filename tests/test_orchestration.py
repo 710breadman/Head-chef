@@ -12,6 +12,7 @@ from head_chef.cli import (
     build_parser,
     cmd_new_cooks,
     cmd_orchestrate,
+    cmd_sprint_check,
     cmd_work,
 )
 from head_chef.storage import ensure_state
@@ -97,6 +98,17 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(tasks[0]["objective"], "Build a room and capture a screenshot")
         self.assertEqual(tasks[0]["status"], "ready")
         self.assertEqual(len(sources), 2)
+
+    def test_discovers_nested_roadmap_outline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outline = root / "product" / "planning" / "ROADMAP.json"
+            outline.parent.mkdir(parents=True)
+            outline.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+
+            found = discover_sprint_file(root)
+
+        self.assertEqual(found, outline.resolve())
 
     def test_assigns_primary_and_supporting_stations(self):
         task = {
@@ -269,6 +281,81 @@ class SprintOrchestrationTests(unittest.TestCase):
         args = build_parser().parse_args(["orchestrate", "--project", "C:/project"])
         self.assertEqual(args.command, "orchestrate")
         self.assertFalse(args.no_local_analysis)
+
+    def test_sprint_check_reports_existing_outline_and_plans(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outline = root / "SPRINTS.json"
+            outline.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+            args = build_parser().parse_args([
+                "sprint-check", "--project", str(root), "--no-local-analysis",
+            ])
+            output = io.StringIO()
+            with patch(
+                "head_chef.cli._captured_command",
+                return_value=(0, {"status": "planned", "task_count": 0}),
+            ) as captured, redirect_stdout(output):
+                code = cmd_sprint_check(args)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["outline_status"], "found")
+        self.assertTrue(payload["planned"])
+        self.assertEqual(captured.call_args.args[1].sprint_file, "SPRINTS.json")
+
+    def test_skill_check_finds_nested_roadmap_outline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outline = root / "packages" / "app" / "planning" / "roadmap.json"
+            outline.parent.mkdir(parents=True)
+            outline.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+            args = build_parser().parse_args([
+                "skill-check", "--project", str(root), "--no-local-analysis",
+            ])
+            output = io.StringIO()
+            with patch(
+                "head_chef.cli._captured_command",
+                return_value=(0, {"status": "planned", "task_count": 0}),
+            ) as captured, redirect_stdout(output):
+                code = cmd_sprint_check(args)
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["outline_status"], "found")
+        self.assertEqual(
+            captured.call_args.args[1].sprint_file,
+            "packages/app/planning/roadmap.json",
+        )
+
+    def test_skill_check_alias_invokes_sprint_check(self):
+        args = build_parser().parse_args(["skill-check", "--project", "C:/project"])
+        self.assertIs(args.func, cmd_sprint_check)
+
+    def test_sprint_check_prompts_and_creates_missing_outline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            args = build_parser().parse_args(["sprint-check", "--project", str(root)])
+            output = io.StringIO()
+            with patch("builtins.input", return_value="yes"), patch(
+                "head_chef.cli._captured_command",
+                return_value=(0, {"status": "planned", "task_count": 0}),
+            ), redirect_stdout(output):
+                code = cmd_sprint_check(args)
+            payload = json.loads(output.getvalue())
+            outline = json.loads((root / "sprints" / "SPRINTS.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["outline_status"], "created")
+        self.assertEqual(outline["tasks"], [])
+
+    def test_sprint_check_can_decline_missing_outline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            args = build_parser().parse_args(["sprint-check", "--project", str(root)])
+            output = io.StringIO()
+            with patch("builtins.input", return_value="no"), redirect_stdout(output):
+                code = cmd_sprint_check(args)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["status"], "outline_missing")
 
     def test_reassign_accepts_custom_model_roster(self):
         args = build_parser().parse_args([

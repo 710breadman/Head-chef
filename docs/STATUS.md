@@ -2,7 +2,7 @@
 
 ## Current state
 
-Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
+Head Chef v0.2 kitchen and Codex skill are implemented on `main`.
 
 ## Implemented
 
@@ -44,10 +44,11 @@ Head Chef v0.2 kitchen and Codex skill are implemented on the draft PR branch.
 - Restart-safe sprint work ledger with explicit coordinator acceptance, dynamic dependency readiness, next-ready reporting, and bounded downstream handoffs.
 - One-command new-cook onboarding plus full/custom-roster sprint reassignment and timestamped assignment diffs.
 - Bounded ComfyUI visual workflow: loopback client, approved workflow templates, portable runtime control, immutable visual jobs, retry/cancel, output manifests, and Qwen3-VL verification.
+- Guided `skill-check` / `sprint-check` / `check-plan` entrypoint that recursively detects JSON sprint or roadmap outlines, offers to create a missing one, and invokes sprint planning.
 
 ## Validation completed in the isolated build environment
 
-- 97 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
+- 103 deterministic unit tests passed; one symlink escape test skipped because this Windows process lacks symlink privilege.
 - Live onboarding detected Qwen 3.5 4B/9B and Qwen 3.6 27B during changing inventory; eight focused Qwen 3.5 strength cases completed with incremental checkpoints.
 - Qwen 3.5 4B passed analysis (94, 35.0s); its other focused cases and all Qwen 3.5 9B cases failed contract or timed out, so they did not displace proven primary stations. Vision remains pending a fixture.
 - Forced skill/runtime upgrade preserved the live benchmark file byte-for-byte (matching SHA-256); full-roster TBWL reassignment restored 45/45 assigned tasks.

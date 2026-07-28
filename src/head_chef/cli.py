@@ -923,6 +923,70 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _create_sprint_outline(project: Path, explicit: str | None = None) -> Path:
+    project = project.resolve()
+    path = (project / (explicit or "sprints/SPRINTS.json")).resolve()
+    try:
+        path.relative_to(project)
+    except ValueError as exc:
+        raise ValueError(f"Sprint file escapes project root: {path}") from exc
+    if path.suffix.casefold() != ".json":
+        raise ValueError("Sprint outline must be a JSON file.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise ValueError(f"Sprint outline already exists: {path}")
+    atomic_write_json(path, {
+        "schema_version": "1.0",
+        "title": f"{project.name} sprint outline",
+        "phases": [],
+        "tasks": [],
+    })
+    return path
+
+
+def cmd_sprint_check(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    try:
+        manifest = discover_sprint_file(project, args.sprint_file)
+        outline_status = "found"
+    except ValueError as exc:
+        if args.sprint_file and "not found" not in str(exc):
+            raise
+        if not args.sprint_file and "No JSON sprint or roadmap file found" not in str(exc):
+            raise
+        create = bool(args.yes)
+        if not create:
+            try:
+                print("No sprint outline found. Create one? [y/N] ", end="", file=sys.stderr)
+                answer = input()
+            except EOFError:
+                answer = ""
+            create = answer.strip().casefold() in {"y", "yes"}
+        if not create:
+            _json({"status": "outline_missing", "outline": None, "planned": False})
+            return 1
+        manifest = _create_sprint_outline(project, args.sprint_file)
+        outline_status = "created"
+
+    orchestrate_args = argparse.Namespace(
+        project=str(project),
+        sprint_file=manifest.relative_to(project).as_posix(),
+        no_local_analysis=args.no_local_analysis,
+        timeout=args.timeout,
+        model=[],
+        apply_roster=False,
+    )
+    plan_code, plan_payload = _captured_command(cmd_orchestrate, orchestrate_args)
+    _json({
+        "status": "planned" if plan_code == 0 else "plan_failed",
+        "outline_status": outline_status,
+        "outline": orchestrate_args.sprint_file,
+        "planned": plan_code == 0,
+        "plan": plan_payload,
+    })
+    return plan_code
+
+
 def _assignment_changes(previous: object, current: dict[str, Any]) -> list[dict[str, Any]]:
     previous_tasks = previous.get("tasks", []) if isinstance(previous, dict) else []
     old = {
@@ -2003,6 +2067,18 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--no-local-analysis", action="store_true")
     orchestrate.add_argument("--timeout", type=int)
     orchestrate.set_defaults(func=cmd_orchestrate)
+
+    sprint_check = sub.add_parser(
+        "sprint-check",
+        aliases=["skill-check", "check-plan"],
+        help="Check for a sprint outline, offer to create one, then build the sprint plan.",
+    )
+    sprint_check.add_argument("--project", default=".")
+    sprint_check.add_argument("--sprint-file", help="Project-relative sprint manifest override.")
+    sprint_check.add_argument("--yes", action="store_true", help="Create a missing outline without prompting.")
+    sprint_check.add_argument("--no-local-analysis", action="store_true")
+    sprint_check.add_argument("--timeout", type=int)
+    sprint_check.set_defaults(func=cmd_sprint_check)
 
     new_cooks = sub.add_parser(
         "new-cooks",

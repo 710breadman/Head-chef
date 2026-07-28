@@ -111,6 +111,7 @@ State and evidence are recorded
 | `kitchen` | Show local-only specialist stations, alternates, evidence, confidence, and review policy. |
 | `cook` | Route, package, dispatch, validate, and record one bounded task. |
 | `orchestrate` / `sprint-plan` / `reassign` | Discover sprint files, analyze every phase locally, save assignments, and compare with the prior plan. |
+| `sprint-check` / `skill-check` / `check-plan` | Report whether a sprint outline exists, offer to create one when missing, then build the plan. |
 | `work` / `run-plan` | Dispatch dependency-ready sprint tasks to preassigned local stations. |
 
 ## Kitchen routing
@@ -146,6 +147,8 @@ Supplied project context is always untrusted data. A schema-valid worker respons
 `cook` supports per-task `--context-tokens`, `--output-tokens`, and `--max-attempts`. Context is capped by discovered model metadata. Lower limits drive safe file-boundary splitting. By default, child jobs run locally and a new synthesis job receives their immutable schema-validated evidence. Use `--no-auto-split` only for manual orchestration. Every retry remains immutable.
 
 After `orchestrate`, run `head-chef work --project "C:\Projects\App"` for the first dependency-ready task, or add `--all-ready` for every currently independent ready task. Progress survives restarts in `.head-chef/orchestration/work-ledger.json`. Successful coding/planning work remains coordinator-pending. After review, `head-chef work --project "C:\Projects\App" --accept-task TASK-ID` records the verdict, unlocks dependents, and supplies a bounded accepted-result handoff to the next worker. Output lists `next_ready_task_ids`. Head Chef packages only existing regular files named by the sprint contract; Codex still reviews and applies changes.
+
+Use `head-chef skill-check --project "C:\Projects\App"` for the guided entrypoint. It recursively finds JSON sprint or roadmap outlines below the project, while skipping generated and dependency directories. If none exists, it asks before creating `sprints/SPRINTS.json`, then invokes sprint planning. `sprint-check` and `check-plan` are aliases. Add `--yes` for non-interactive creation.
 
 Install optional Codex skill:
 

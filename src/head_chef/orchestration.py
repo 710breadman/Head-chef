@@ -95,12 +95,17 @@ def discover_sprint_file(project: Path, explicit: str | None = None) -> Path:
     for path in project.rglob("*"):
         if any(part in IGNORED_DIRECTORIES for part in path.relative_to(project).parts):
             continue
-        if path.is_file() and "sprint" in path.name.casefold() and path.suffix.casefold() == ".json":
+        name = path.name.casefold()
+        if (
+            path.is_file()
+            and any(label in name for label in ("sprint", "roadmap"))
+            and path.suffix.casefold() == ".json"
+        ):
             candidates.append(path)
         if len(candidates) > 100:
             break
     if not candidates:
-        raise ValueError("No JSON sprint file found. Use --sprint-file to select one.")
+        raise ValueError("No JSON sprint or roadmap file found. Use --sprint-file to select one.")
     return sorted(candidates, key=lambda item: (len(item.relative_to(project).parts), str(item)))[0].resolve()
 
 

@@ -19,11 +19,20 @@ $HeadChefSkill = if ($env:CODEX_HOME) {
   Join-Path $HOME ".codex\skills\head-chef-local-router"
 }
 $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
-& $HeadChef refresh
-& $HeadChef orchestrate --project "C:\Projects\App"
 ```
 
-2. Always run `refresh`, then make `orchestrate` the first project task. Refresh uses machine-global digest history, strength-tests new/changed local models only in advertised capabilities, applies owner overrides, excludes cloud models, and rebuilds `.head-chef/kitchen.json`. Vision strength waits for an explicit safe fixture. New digests never inherit stale evidence.
+2. Treat `skill-check`, `sprint-check`, and `check-plan` after `$head-chef-local-router` as skill commands. For any of these commands, run `refresh`, then run `skill-check` as the first project task:
+
+```powershell
+& $HeadChef refresh
+& $HeadChef skill-check --project "C:\Projects\App"
+```
+
+   `skill-check` reports whether a JSON sprint outline exists and plans it when found. Normal skill invocations without these commands follow the bounded routing workflow and do not force a sprint check.
+   - If it returns `outline_missing`, ask the user whether to create `sprints/SPRINTS.json`. Do not create it without approval.
+   - After approval, run `& $HeadChef skill-check --project "C:\Projects\App" --yes`.
+   - If the user declines, run `& $HeadChef kitchen` and continue only with user-directed bounded work.
+   - Refresh uses machine-global digest history, strength-tests new/changed local models only in advertised capabilities, applies owner overrides, excludes cloud models, and rebuilds `.head-chef/kitchen.json`. Vision strength waits for an explicit safe fixture. New digests never inherit stale evidence.
    - When the user says new cooks/models arrived, run `& $HeadChef new-cooks --project "C:\Projects\App"` instead. This performs refresh plus sprint reassignment and reports every station change.
    - To reconsider stations without inventory work, run `& $HeadChef reassign --project "C:\Projects\App"`.
    - On `new-cooks`, repeat `--model MODEL` to evaluate only named cooks; sprint seating still uses the full kitchen.
@@ -35,7 +44,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
    - pre-assign primary and supporting local stations;
    - ask the local planning station to analyze every phase;
    - save `.head-chef/orchestration/sprint-plan.json`.
-4. If no sprint contract exists, report that fact, run `& $HeadChef kitchen`, and continue with a user-defined bounded task. Never invent a sprint file without permission.
+4. Never invent a sprint file without permission. Use only the `skill-check --yes` creation path after explicit approval.
 5. Read only actionable plan entries and local phase notes. Respect dependency order. Inspect assignment status: run `assigned`; supply missing input for `conditional`; keep `unfilled` with Codex; never dispatch `abstained`. `work` stops on deterministic/local station disagreement; use `--accept-assignment-review` only after Codex reviews it.
 6. Run `& $HeadChef work --project "C:\Projects\App"` for the first ready assigned task. Use `--all-ready` only when tasks are independently actionable.
 7. Review coordinator-pending evidence. When accepted, run `& $HeadChef work --project "C:\Projects\App" --accept-task TASK-ID`; this unlocks dependencies and passes a bounded accepted-result handoff. Never accept merely to advance the graph.
