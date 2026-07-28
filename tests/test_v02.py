@@ -451,9 +451,9 @@ class ContractTests(unittest.TestCase):
         ]
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as temp, \
-             patch("head_chef.cli._captured_command", side_effect=calls) as captured, \
-             patch("head_chef.cli.load_settings", return_value=(Settings(), Path(temp))), \
-             patch("head_chef.cli.append_jsonl") as journal, \
+             patch("head_chef.cli.job_commands._captured_command", side_effect=calls) as captured, \
+             patch("head_chef.cli.job_commands.load_settings", return_value=(Settings(), Path(temp))), \
+             patch("head_chef.cli.job_commands.append_jsonl") as journal, \
              redirect_stdout(output):
             code = cmd_cook(args)
         payload = json.loads(output.getvalue())
@@ -486,8 +486,8 @@ class ContractTests(unittest.TestCase):
                 "verification": {"status": "accepted"},
             }
             output = io.StringIO()
-            with patch("head_chef.cli.load_settings", return_value=(Settings(), root)), \
-                 patch("head_chef.cli._dispatch_saved_job", side_effect=[
+            with patch("head_chef.cli.job_commands.load_settings", return_value=(Settings(), root)), \
+                 patch("head_chef.cli.job_commands._dispatch_saved_job", side_effect=[
                      (0, child_result, [{"attempt": 1, "exit_code": 0}]),
                      (0, synthesis_result, [{"attempt": 1, "exit_code": 0}]),
                  ]), redirect_stdout(output):

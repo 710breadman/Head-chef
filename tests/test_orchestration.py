@@ -356,7 +356,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             ])
             output = io.StringIO()
             with patch(
-                "head_chef.cli._captured_command",
+                "head_chef.cli.sprint_commands._captured_command",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ) as captured, redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -377,7 +377,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             ])
             output = io.StringIO()
             with patch(
-                "head_chef.cli._captured_command",
+                "head_chef.cli.sprint_commands._captured_command",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ) as captured, redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -400,7 +400,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             args = build_parser().parse_args(["sprint-check", "--project", str(root)])
             output = io.StringIO()
             with patch("builtins.input", return_value="yes"), patch(
-                "head_chef.cli._captured_command",
+                "head_chef.cli.sprint_commands._captured_command",
                 return_value=(0, {"status": "planned", "task_count": 0}),
             ), redirect_stdout(output):
                 code = cmd_sprint_check(args)
@@ -453,7 +453,7 @@ class SprintOrchestrationTests(unittest.TestCase):
         ])
         output = io.StringIO()
         with patch(
-            "head_chef.cli._captured_command",
+            "head_chef.cli.roster_commands._captured_command",
             side_effect=[
                 (0, {"status": "refreshed", "changes": {"new": ["new-coder"]}}),
                 (0, {"status": "planned", "assignment_change_count": 3}),
@@ -483,7 +483,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command", return_value=(0, {"status": "completed"})) as captured, \
+            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, {"status": "completed"})) as captured, \
                  redirect_stdout(output):
                 code = cmd_work(args)
             cook_args = captured.call_args.args[1]
@@ -511,7 +511,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command", return_value=(0, {"status": "completed"})) as captured, \
+            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, {"status": "completed"})) as captured, \
                  redirect_stdout(output):
                 code = cmd_work(args)
             cook_args = captured.call_args.args[1]
@@ -554,7 +554,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             first_args = build_parser().parse_args([
                 "work", "--project", str(root), "--task-id", "T-1",
             ])
-            with patch("head_chef.cli._captured_command", return_value=(0, primary_payload)), \
+            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, primary_payload)), \
                  redirect_stdout(io.StringIO()):
                 self.assertEqual(cmd_work(first_args), 0)
             ledger = json.loads(
@@ -566,7 +566,7 @@ class SprintOrchestrationTests(unittest.TestCase):
                 "work", "--project", str(root), "--accept-task", "T-1",
             ])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command", return_value=(0, primary_payload)) as captured, \
+            with patch("head_chef.cli.sprint_commands._captured_command", return_value=(0, primary_payload)) as captured, \
                  redirect_stdout(output):
                 self.assertEqual(cmd_work(second_args), 0)
             cook_args = captured.call_args.args[1]
@@ -604,7 +604,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)
@@ -629,7 +629,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
             with patch(
-                "head_chef.cli._dispatch_visual_task",
+                "head_chef.cli.sprint_commands._dispatch_visual_task",
                 return_value=(0, {"status": "coordinator_review_required"}),
             ) as dispatch, redirect_stdout(output):
                 code = cmd_work(args)
@@ -656,7 +656,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)
@@ -683,7 +683,7 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli._captured_command") as captured, redirect_stdout(output):
+            with patch("head_chef.cli.sprint_commands._captured_command") as captured, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
         self.assertEqual(code, 2)
