@@ -112,7 +112,7 @@ State and evidence are recorded
 | `cook` | Route, package, dispatch, validate, and record one bounded task. |
 | `orchestrate` / `sprint-plan` / `reassign` | Discover sprint files, analyze every phase locally, save assignments, and compare with the prior plan. |
 | `sprint-check` / `skill-check` / `check-plan` | Report whether a sprint outline exists, offer to create one when missing, then build the plan. |
-| `work` / `run-plan` | Dispatch dependency-ready sprint tasks to preassigned local stations. |
+| `work` / `run-plan` | Dispatch dependency-ready sprint tasks to preassigned local stations. `--all-ready --parallel N` dispatches every ready task, up to N concurrently. |
 
 ## Kitchen routing
 
@@ -141,7 +141,9 @@ It evaluates only new/changed digests, checkpoints every completed case for safe
 
 Sprint assignments are explicit: `assigned`, `conditional` (for example, vision needs an image), `unfilled` (no eligible installed model), or `abstained` (owner/legal/destructive decision). Every task stores a structured profile, assignment reason, score evidence, risk, tool needs, and whether local work is full or advisory.
 
-The local planning station independently recommends a primary station, supporting stations, and local scope for every task. Station and scope disagreements are counted separately. `work` stops on a station disagreement until reviewed; `--accept-assignment-review` explicitly keeps the deterministic assignment. Local advice never silently overrides capability, safety, or abstention gates.
+The local planning station independently recommends a primary station, supporting stations, and local scope for every task. Station and scope disagreements are counted separately, but they are advisory: `work` always dispatches the deterministic assignment and surfaces a `station_disagreement` note on the result for the coordinator to spot-check, rather than blocking. Local advice never silently overrides capability, safety, or abstention gates — those remain hard.
+
+By default, `work` dispatches one dependency-ready task per call. Pass `--all-ready` to dispatch every dependency-ready task in the plan in one call, and `--parallel N` to run up to `N` of them concurrently instead of one at a time — e.g. `head-chef work --project "C:\Projects\App" --all-ready --parallel 3` on a 3-GPU box. Head Chef only avoids serializing its own requests; Ollama's own scheduler (`OLLAMA_NUM_PARALLEL`, `OLLAMA_SCHED_SPREAD`, `CUDA_VISIBLE_DEVICES`) decides how concurrent requests are actually placed across GPUs. `doctor` best-effort detects GPU count and reports a `suggested_work_parallel` value.
 
 Supplied project context is always untrusted data. A schema-valid worker response is successful only when it covers every top-level acceptance criterion and reports no true blockers; incomplete evidence exits `5` and can trigger fallback.
 

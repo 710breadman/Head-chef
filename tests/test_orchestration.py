@@ -707,7 +707,7 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["status"], "input_required")
         captured.assert_not_called()
 
-    def test_work_stops_on_station_disagreement_until_reviewed(self):
+    def test_work_dispatches_through_station_disagreement_but_flags_it(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             state = ensure_state(root)
@@ -727,12 +727,16 @@ class SprintOrchestrationTests(unittest.TestCase):
             }]}), encoding="utf-8")
             args = build_parser().parse_args(["work", "--project", str(root)])
             output = io.StringIO()
-            with patch("head_chef.cli.sprint_commands._cook_core") as captured, redirect_stdout(output):
+            with patch(
+                "head_chef.cli.sprint_commands._cook_core", return_value=(0, {"status": "completed"}),
+            ) as cook_core, redirect_stdout(output):
                 code = cmd_work(args)
             payload = json.loads(output.getvalue())
-        self.assertEqual(code, 2)
-        self.assertEqual(payload["results"][0]["status"], "assignment_review_required")
-        captured.assert_not_called()
+        self.assertEqual(code, 0)
+        cook_core.assert_called_once()
+        disagreement = payload["results"][0]["station_disagreement"]
+        self.assertEqual(disagreement["deterministic_station"], "analysis")
+        self.assertEqual(disagreement["local_recommended_station"], "coding")
 
 
 if __name__ == "__main__":

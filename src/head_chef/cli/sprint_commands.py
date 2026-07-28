@@ -389,28 +389,42 @@ def _dispatch_one_task(
     """Dispatch one dependency-ready sprint task. Only reads `ledger` (for dependency handoff
     notes) — never mutates it — so this is safe to run concurrently across tasks from a thread
     pool; the caller applies the returned ledger_entry after every task in the batch completes.
+
+    A station disagreement between the deterministic profile and the local planning reviewer is
+    advisory only: it's surfaced on the result (station_disagreement) but never blocks dispatch —
+    the deterministic assignment always dispatches. Coordinator/safety gates (abstained, missing
+    required input, no eligible model) still apply independently and are unaffected by this.
     """
+    local_review = task.get("local_assignment_review", {})
+    disagreement = None
+    if isinstance(local_review, dict) and local_review.get("station_agrees") is False:
+        disagreement = {
+            "deterministic_station": (task.get("primary_assignment") or {}).get("station"),
+            "local_recommended_station": local_review.get("recommended_primary_station"),
+            "note": (
+                "Local planning reviewer recommended a different station; dispatched with the "
+                "deterministic assignment anyway. Spot-check this task's output."
+            ),
+        }
+    outcome = _dispatch_one_task_assigned(task, project, settings, state, ledger, artifact, args)
+    if disagreement is not None:
+        outcome.item_result["station_disagreement"] = disagreement
+    return outcome
+
+
+def _dispatch_one_task_assigned(
+    task: dict[str, Any],
+    project: Path,
+    settings: Settings,
+    state: Path,
+    ledger: dict[str, Any],
+    artifact: Path,
+    args: argparse.Namespace,
+) -> _TaskOutcome:
     assignment = task.get("primary_assignment", {})
     category = assignment.get("station")
     model = assignment.get("model")
     assignment_status = assignment.get("status", "assigned")
-    local_review = task.get("local_assignment_review", {})
-    if (
-        isinstance(local_review, dict)
-        and local_review.get("station_agrees") is False
-        and not args.accept_assignment_review
-    ):
-        return _TaskOutcome(
-            {
-                "task_id": task.get("id"),
-                "status": "assignment_review_required",
-                "deterministic_station": category,
-                "local_recommended_station": local_review.get("recommended_primary_station"),
-                "reason": "Deterministic profile and local planning reviewer disagree. Review before dispatch.",
-            },
-            None,
-            2,
-        )
     if assignment_status == "abstained":
         return _TaskOutcome(
             {

@@ -336,11 +336,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     work.add_argument("--all-ready", action="store_true")
     work.add_argument("--image", action="append", default=[], help="Project-local input for a ready vision task.")
-    work.add_argument(
-        "--accept-assignment-review",
-        action="store_true",
-        help="Dispatch deterministic station after reviewing a local station disagreement.",
-    )
     work.add_argument("--context-tokens", type=int)
     work.add_argument("--output-tokens", type=int)
     work.add_argument("--max-attempts", type=int, default=3)
