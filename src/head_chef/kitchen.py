@@ -4,6 +4,7 @@ from typing import Any
 
 from .models import ModelProfile
 from .router import RouteRequest, route
+from .visual import GENERATION_STATION_OUTPUT_TYPES, select_approved_template
 
 
 STATIONS = {
@@ -41,5 +42,19 @@ def build_kitchen(
                 for item in decision.candidates
                 if not item.rejected
             ][:3],
+            "backend": "ollama",
+        }
+    for station, output_type in GENERATION_STATION_OUTPUT_TYPES.items():
+        template_id, _spec = select_approved_template(output_type)
+        stations[station] = {
+            "model": template_id,
+            "confidence": 0.9 if template_id else 0.0,
+            "review_required": True,
+            "reason": (
+                f"Approved ComfyUI template '{template_id}' available for {output_type} generation."
+                if template_id else f"No approved {output_type} generation template installed."
+            ),
+            "alternates": [],
+            "backend": "comfyui",
         }
     return {"mode": "local-only", "stations": stations}

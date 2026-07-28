@@ -132,6 +132,41 @@ class SprintOrchestrationTests(unittest.TestCase):
         primary, supporting = infer_stations(task)
         self.assertEqual(primary, "coding")
         self.assertNotIn("vision", supporting)
+        self.assertNotIn("image_generation", supporting)
+        self.assertNotIn("video_generation", supporting)
+
+    def test_classifies_image_generation_task(self):
+        task = {
+            "title": "Create hero concept art",
+            "objective": "Produce sprite art and an icon for the new hero character",
+            "acceptance_criteria": ["Matches art brief"],
+            "expected_files": ["art/hero-sprite.png"],
+        }
+        primary, supporting = infer_stations(task)
+        self.assertEqual(primary, "image_generation")
+        self.assertIn("analysis", supporting)
+
+    def test_classifies_video_generation_task(self):
+        task = {
+            "title": "Produce launch trailer",
+            "objective": "Generate a short cutscene trailer for the release announcement",
+            "acceptance_criteria": ["Trailer is under 30 seconds"],
+            "expected_files": [],
+        }
+        primary, supporting = infer_stations(task)
+        self.assertEqual(primary, "video_generation")
+
+    def test_vision_inspection_stays_distinct_from_generation(self):
+        task = {
+            "title": "Inspect UI screenshot",
+            "objective": "Inspect the screenshot for visual defects before release",
+            "acceptance_criteria": ["No layout defects"],
+            "expected_files": [],
+        }
+        primary, supporting = infer_stations(task)
+        self.assertEqual(primary, "vision")
+        self.assertNotIn("image_generation", supporting)
+        self.assertNotIn("video_generation", supporting)
 
     def test_command_execution_task_is_local_advisory(self):
         task = {
@@ -211,6 +246,35 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(assignment["status"], "abstained")
         self.assertIsNone(assignment["model"])
         self.assertEqual(plan["tasks"][0]["task_profile"]["local_scope"], "none")
+
+    def test_plan_assigns_approved_comfyui_template_for_image_generation(self):
+        task = {
+            "id": "IMG-1", "title": "Create hero concept art",
+            "objective": "Produce sprite art and an icon for the new hero character",
+            "phase": "art", "status": "ready", "dependencies": [],
+            "acceptance_criteria": ["Matches art brief"], "expected_files": [], "evidence": [],
+        }
+        plan = build_sprint_plan([task], [])
+        assignment = plan["tasks"][0]["primary_assignment"]
+        self.assertEqual(assignment["station"], "image_generation")
+        self.assertEqual(assignment["backend"], "comfyui")
+        self.assertEqual(assignment["status"], "assigned")
+        self.assertEqual(assignment["model"], "sdxl-text-to-image")
+        self.assertTrue(assignment["review_required"])
+
+    def test_plan_leaves_video_generation_unfilled_without_approved_template(self):
+        task = {
+            "id": "VID-1", "title": "Produce launch trailer",
+            "objective": "Generate a short cutscene trailer for the release announcement",
+            "phase": "art", "status": "ready", "dependencies": [],
+            "acceptance_criteria": ["Trailer is under 30 seconds"], "expected_files": [], "evidence": [],
+        }
+        plan = build_sprint_plan([task], [])
+        assignment = plan["tasks"][0]["primary_assignment"]
+        self.assertEqual(assignment["station"], "video_generation")
+        self.assertEqual(assignment["backend"], "comfyui")
+        self.assertEqual(assignment["status"], "unfilled")
+        self.assertIsNone(assignment["model"])
 
     def test_local_analysis_covers_each_phase(self):
         plan = {
@@ -546,6 +610,34 @@ class SprintOrchestrationTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(payload["results"][0]["status"], "coordinator_required")
         captured.assert_not_called()
+
+    def test_work_dispatches_image_generation_task_to_visual_pipeline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = ensure_state(root)
+            plan_path = state / "orchestration" / "sprint-plan.json"
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(json.dumps({"tasks": [{
+                "id": "IMG-1", "title": "Create hero art", "objective": "Generate concept art for the hero",
+                "actionable": True, "acceptance_criteria": ["Matches brief"], "expected_files": [],
+                "dependencies": [], "evidence": [],
+                "primary_assignment": {
+                    "station": "image_generation", "model": "sdxl-text-to-image",
+                    "status": "assigned", "backend": "comfyui",
+                },
+            }]}), encoding="utf-8")
+            args = build_parser().parse_args(["work", "--project", str(root)])
+            output = io.StringIO()
+            with patch(
+                "head_chef.cli._dispatch_visual_task",
+                return_value=(0, {"status": "coordinator_review_required"}),
+            ) as dispatch, redirect_stdout(output):
+                code = cmd_work(args)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        dispatch.assert_called_once()
+        self.assertEqual(payload["results"][0]["category"], "image_generation")
+        self.assertEqual(payload["results"][0]["result"]["status"], "coordinator_review_required")
 
     def test_work_waits_for_required_vision_input(self):
         with tempfile.TemporaryDirectory() as temp:

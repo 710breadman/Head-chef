@@ -17,7 +17,18 @@ TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "embedding": ("embed", "embedding", "vectorize", "vector representation"),
     "retrieval": ("search", "retrieve", "rank", "match", "similarity", "index"),
     "writing": ("rewrite", "story", "draft", "prose", "chapter", "edit", "tone"),
+    "image_generation": (
+        "generate image", "create image", "concept art", "pixel art", "sprite art",
+        "cover art", "icon design", "thumbnail design", "illustration", "artwork", "text-to-image",
+    ),
+    "video_generation": (
+        "generate video", "create video", "text-to-video", "video generation",
+        "animation clip", "cutscene", "trailer",
+    ),
 }
+
+# Categories no Ollama model can ever advertise; fulfilled by the ComfyUI visual pipeline instead.
+VISUAL_PIPELINE_CATEGORIES = {"image_generation", "video_generation"}
 
 
 @dataclass(slots=True)
@@ -342,6 +353,14 @@ def route(
     candidates.sort(key=lambda item: item.score, reverse=True)
     viable = [candidate for candidate in candidates if not candidate.rejected]
     if not viable:
+        if category in VISUAL_PIPELINE_CATEGORIES:
+            explanation = (
+                f"No Ollama model can fulfill {category}; it is fulfilled by an approved ComfyUI "
+                "template instead. Use 'visual-job'/'visual-run', or sprint orchestration's "
+                f"{category} station, not an Ollama model."
+            )
+        else:
+            explanation = "No installed local model is suitable. Keep this task with Codex/OpenAI or install an appropriate model manually."
         return RouteDecision(
             category=category,
             selected_model=None,
@@ -350,7 +369,7 @@ def route(
             budget=None,
             requires_split=False,
             coordinator_review_required=True,
-            explanation="No installed local model is suitable. Keep this task with Codex/OpenAI or install an appropriate model manually.",
+            explanation=explanation,
         )
 
     winner = viable[0]

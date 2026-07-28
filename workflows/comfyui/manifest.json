@@ -5,6 +5,7 @@
       "file": "sdxl-text-to-image.json",
       "sha256": "440f668f568faf8e6d596c3c2e7dd94a4513a489f80e406d5b6025581dd243d8",
       "description": "Fixed SDXL-style checkpoint, sampler, decode, and save graph.",
+      "output_type": "image",
       "minimum_free_vram_mb": 4096,
       "variables": {
         "checkpoint": {

@@ -14,6 +14,13 @@ from .storage import atomic_create_json, atomic_write_json, compact_timestamp, u
 
 VISUAL_SCHEMA_VERSION = "1.0"
 
+# Sprint "stations" that are fulfilled by an approved ComfyUI template rather
+# than an installed Ollama model, mapped to the template output_type they need.
+GENERATION_STATION_OUTPUT_TYPES = {
+    "image_generation": "image",
+    "video_generation": "video",
+}
+
 
 @dataclass(slots=True)
 class VisualJob:
@@ -75,6 +82,29 @@ def load_approved_workflow(template_id: str, parameters: dict[str, Any]) -> tupl
         resolved[name] = _validate_parameter(name, value, variable)
     workflow = json.loads(raw.decode("utf-8"))
     return _replace_placeholders(workflow, resolved), spec
+
+
+def approved_templates_for_output(output_type: str) -> dict[str, dict[str, Any]]:
+    """Approved templates whose manifest entry declares this output_type (e.g. "image", "video")."""
+    try:
+        manifest = json.loads((workflow_root() / "manifest.json").read_text(encoding="utf-8"))
+    except (ValueError, OSError, json.JSONDecodeError):
+        return {}
+    templates = manifest.get("templates", {}) if isinstance(manifest, dict) else {}
+    return {
+        template_id: spec
+        for template_id, spec in templates.items()
+        if isinstance(spec, dict) and spec.get("output_type") == output_type
+    }
+
+
+def select_approved_template(output_type: str) -> tuple[str | None, dict[str, Any] | None]:
+    """Deterministically pick one approved template for an output_type, or (None, None) if none exist."""
+    templates = approved_templates_for_output(output_type)
+    if not templates:
+        return None, None
+    template_id = sorted(templates)[0]
+    return template_id, templates[template_id]
 
 
 def model_usability(inventory: dict[str, list[str]]) -> list[dict[str, Any]]:

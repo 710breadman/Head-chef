@@ -10,6 +10,7 @@ from typing import Any
 from .models import ModelProfile
 from .ollama import OllamaClient, OllamaError
 from .router import RouteRequest, route
+from .visual import GENERATION_STATION_OUTPUT_TYPES, select_approved_template
 
 
 IGNORED_DIRECTORIES = {".git", ".head-chef", ".venv", "node_modules", "build", "dist"}
@@ -21,6 +22,8 @@ ROLE_NAMES = {
     "writing": "writing station",
     "retrieval": "research station",
     "analysis": "verification station",
+    "image_generation": "image generation station",
+    "video_generation": "video generation station",
 }
 STATIONS = set(ROLE_NAMES)
 PHASE_REVIEW_SCHEMA = {
@@ -205,7 +208,18 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
         or value.casefold().startswith(("game/", "src/", "tools/", "tests/"))
         for value in expected
     )
-    visual = any(has(word) for word in ("visual", "sprite", "screenshot", "camera", "pixel", "render", "lighting", "art"))
+    vision_inspect = any(
+        has(word) for word in ("screenshot", "photo", "ocr", "diagram", "inspect", "visual defect", "visual qa")
+    )
+    image_gen = any(
+        has(word) for word in (
+            "sprite", "camera", "pixel", "render", "lighting", "art", "illustration",
+            "concept art", "texture", "icon", "thumbnail", "cover art", "artwork", "logo",
+        )
+    )
+    video_gen = any(
+        has(word) for word in ("video", "animation", "cutscene", "trailer", "motion graphic", "clip")
+    )
     planning = any(has(word) for word in ("roadmap", "architecture", "decision", "choose", "lock or reopen", "adr"))
     writing = any(has(word) for word in ("dialogue", "narrative", "prose", "chapter", "story", "rewrite"))
     retrieval = any(has(word) for word in ("research", "inventory", "retrieve", "source review"))
@@ -251,7 +265,11 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
         primary = "planning"
     elif codeish:
         primary = "coding"
-    elif visual:
+    elif video_gen:
+        primary = "video_generation"
+    elif image_gen:
+        primary = "image_generation"
+    elif vision_inspect:
         primary = "vision"
     elif writing:
         primary = "writing"
@@ -262,7 +280,9 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
 
     support: list[str] = []
     for condition, station in (
-        (visual, "vision"),
+        (video_gen, "video_generation"),
+        (image_gen, "image_generation"),
+        (vision_inspect, "vision"),
         (planning, "planning"),
         (writing, "writing"),
         (retrieval, "retrieval"),
@@ -270,12 +290,15 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
     ):
         if condition and station != primary and station not in support:
             support.append(station)
-    if primary in {"coding", "vision", "planning"} and "analysis" not in support:
+    if (
+        primary in {"coding", "vision", "planning", "image_generation", "video_generation"}
+        and "analysis" not in support
+    ):
         support.append("analysis")
     if primary is None and "analysis" not in support:
         support.insert(0, "analysis")
 
-    required_inputs = ["image"] if visual and primary == "vision" else []
+    required_inputs = ["image"] if vision_inspect and primary == "vision" else []
     required_tools = ["shell"] if tool_required else []
     local_scope = "none" if owner_only else "advisory" if tool_required or high_risk else "full"
     coordinator_reasons: list[str] = []
@@ -285,12 +308,18 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
         coordinator_reasons.append("Acceptance requires command execution unavailable to bounded local workers.")
     if high_risk and not owner_only:
         coordinator_reasons.append("High-risk change requires coordinator review and application.")
+    if video_gen:
+        modalities = ["text", "video"]
+    elif image_gen or vision_inspect:
+        modalities = ["text", "image"]
+    else:
+        modalities = ["text"]
     return {
         "schema_version": "1.0",
         "work_kind": primary or "coordinator_decision",
         "primary_station": primary,
         "supporting_stations": support[:3],
-        "modalities": ["text", "image"] if visual else ["text"],
+        "modalities": modalities,
         "risk": "high" if high_risk else "medium" if tool_required else "low",
         "required_inputs": required_inputs,
         "required_tools": required_tools,
@@ -299,7 +328,9 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
         "coordinator_reasons": coordinator_reasons,
         "signals": {
             "code": codeish,
-            "visual": visual,
+            "vision_inspect": vision_inspect,
+            "image_generation": image_gen,
+            "video_generation": video_gen,
             "planning": planning,
             "writing": writing,
             "retrieval": retrieval,
@@ -313,6 +344,36 @@ def profile_sprint_task(task: dict[str, Any]) -> dict[str, Any]:
 def infer_stations(task: dict[str, Any]) -> tuple[str | None, list[str]]:
     profile = profile_sprint_task(task)
     return profile["primary_station"], profile["supporting_stations"]
+
+
+def _visual_station_assignment(
+    station: str, output_type: str, task_profile: dict[str, Any], primary: str | None,
+) -> dict[str, Any]:
+    template_id, spec = select_approved_template(output_type)
+    status = "assigned" if template_id else "unfilled"
+    reason = (
+        f"Approved ComfyUI template '{template_id}' available for {output_type} generation."
+        if template_id else (
+            f"No approved {output_type} generation template installed; add one under "
+            "workflows/comfyui/ and register it in manifest.json with a matching output_type."
+        )
+    )
+    return {
+        "station": station,
+        "role": ROLE_NAMES[station],
+        "model": template_id,
+        "model_digest": spec.get("sha256") if spec else None,
+        "confidence": 0.9 if template_id else 0.0,
+        # Generated media is always coordinator-reviewed before use, matching visual-run.
+        "review_required": True,
+        "status": status,
+        "scope": task_profile["local_scope"] if station == primary else "support",
+        "required_inputs": [],
+        "reason": reason,
+        "score": None,
+        "score_evidence": [],
+        "backend": "comfyui",
+    }
 
 
 def build_sprint_plan(
@@ -330,6 +391,9 @@ def build_sprint_plan(
         supporting = task_profile["supporting_stations"]
 
         def assignment(station: str) -> dict[str, Any]:
+            output_type = GENERATION_STATION_OUTPUT_TYPES.get(station)
+            if output_type:
+                return _visual_station_assignment(station, output_type, task_profile, primary)
             decision = route(
                 RouteRequest(
                     task=f"{task['title']}. {task['objective']}",
@@ -363,6 +427,7 @@ def build_sprint_plan(
                 "reason": decision.explanation,
                 "score": selected.score if selected else None,
                 "score_evidence": selected.reasons if selected else [],
+                "backend": "ollama",
             }
 
         item = dict(task)
@@ -421,7 +486,9 @@ def add_local_phase_analysis(
             "recommend exactly one primary station (or coordinator_only), up to three supporting stations, "
             "and local_scope full/advisory/none. Stations: coding=implementation, vision=actual image inspection, "
             "embedding=vector creation, planning=architecture/decomposition, writing=prose/dialogue, "
-            "retrieval=supplied-source lookup, analysis=verification. Command execution is advisory because "
+            "retrieval=supplied-source lookup, analysis=verification, image_generation=create new image/art/sprite "
+            "assets via an approved ComfyUI template, video_generation=create new video/animation assets via an "
+            "approved ComfyUI template. Command execution is advisory because "
             "workers have no shell. Legal, owner, destructive, secret, and production decisions are coordinator_only. "
             "Do not claim files were inspected or tests ran. Return the required JSON.\n\n"
             + json.dumps({"phase": phase, "tasks": tasks}, ensure_ascii=False)

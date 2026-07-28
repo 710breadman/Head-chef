@@ -1,6 +1,6 @@
 ---
 name: head-chef-local-router
-description: Route bounded Codex work through validated local Ollama specialist models using Head Chef. Use when Codex can delegate coding, vision, embedding, planning, writing, retrieval, or analysis while retaining coordinator authority, review, tests, and final application.
+description: Route bounded Codex work through validated local Ollama specialist models and approved local ComfyUI templates using Head Chef. Use when Codex can delegate coding, vision, embedding, planning, writing, retrieval, analysis, image generation, or video generation while retaining coordinator authority, review, tests, and final application.
 ---
 
 # Head Chef Local Router
@@ -48,7 +48,7 @@ $HeadChef = Join-Path $HeadChefSkill "scripts\Invoke-HeadChef.ps1"
 5. Read only actionable plan entries and local phase notes. Respect dependency order. Inspect assignment status: run `assigned`; supply missing input for `conditional`; keep `unfilled` with Codex; never dispatch `abstained`. `work` stops on deterministic/local station disagreement; use `--accept-assignment-review` only after Codex reviews it.
 6. Run `& $HeadChef work --project "C:\Projects\App"` for the first ready assigned task. Use `--all-ready` only when tasks are independently actionable.
 7. Review coordinator-pending evidence. When accepted, run `& $HeadChef work --project "C:\Projects\App" --accept-task TASK-ID`; this unlocks dependencies and passes a bounded accepted-result handoff. Never accept merely to advance the graph.
-8. Give the primary station most implementation work. Use supporting stations when useful: planning for decomposition, retrieval for supplied-source lookup, writing for prose, vision for actual captures, and analysis for independent review.
+8. Give the primary station most implementation work. Use supporting stations when useful: planning for decomposition, retrieval for supplied-source lookup, writing for prose, vision for actual captures, image_generation/video_generation for new asset creation via an approved ComfyUI template, and analysis for independent review.
 9. Prefer quality over speed. Do not use `--prefer-speed`. Codex should mainly enforce rules, package context, tune parameters, review evidence, run authoritative tests, and apply or reject changes.
 10. Stop and tell the user to run `scripts\Install-CodexSkill.ps1` from the Head Chef repository if the launcher reports that installation is missing.
 11. Keep work with Codex when no station exists, routing abstains, context cannot be packaged safely, or task needs architecture, migration, security, licensing, destructive, or public-interface authority.

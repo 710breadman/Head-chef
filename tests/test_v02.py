@@ -529,6 +529,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(kitchen["stations"]["coding"]["model"], "coder")
         self.assertEqual(kitchen["stations"]["vision"]["model"], "vision")
         self.assertEqual(kitchen["stations"]["embedding"]["model"], "embed")
+        self.assertEqual(kitchen["stations"]["image_generation"]["backend"], "comfyui")
+        self.assertEqual(kitchen["stations"]["image_generation"]["model"], "sdxl-text-to-image")
+        self.assertIsNone(kitchen["stations"]["video_generation"]["model"])
 
     def test_strength_benchmark_only_runs_advertised_category(self):
         class BenchClient(FakeClient):

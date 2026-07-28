@@ -119,10 +119,11 @@ State and evidence are recorded
 Head Chef treats models as stations, not interchangeable general workers:
 
 - coding: coder-specialized models;
-- vision: multimodal specialists;
+- vision: multimodal specialists (image *inspection*, e.g. reviewing a screenshot);
 - embedding: embedding-only models through `/api/embed`;
 - writing: writing/story specialists;
-- planning, retrieval, analysis: capable generalists ranked with task-matched outcomes.
+- planning, retrieval, analysis: capable generalists ranked with task-matched outcomes;
+- image_generation, video_generation: asset *creation*, fulfilled by an approved, hash-pinned ComfyUI template (see [Kitchen routing](#kitchen-routing) below and `workflows/comfyui/manifest.json`) rather than an Ollama model. `kitchen`, `orchestrate`, and `work` report these the same way as Ollama stations, marked `"backend": "comfyui"`; a station is `unfilled` until a matching template is registered.
 
 Cloud-tag models are excluded by default. Manual overrides cannot assign a model outside advertised capabilities. Successful, invalid, and timed-out dispatches feed category-specific latency/reliability evidence into future routing.
 

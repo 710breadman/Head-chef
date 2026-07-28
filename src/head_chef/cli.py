@@ -36,6 +36,7 @@ from .comfyui import (
     stop_portable_comfyui,
 )
 from .visual import (
+    GENERATION_STATION_OUTPUT_TYPES,
     create_visual_job,
     free_vram_mb,
     load_approved_workflow,
@@ -1363,6 +1364,53 @@ def _primary_run_from_payload(payload: object) -> dict[str, Any] | None:
     return None
 
 
+def _dispatch_visual_task(
+    project: Path,
+    settings: Settings,
+    task: dict[str, Any],
+    assignment: dict[str, Any],
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any]]:
+    """Dispatch a sprint task assigned to a ComfyUI-backed generation station."""
+    template_id = assignment.get("model")
+    if not template_id:
+        return 2, {"status": "no_eligible_model", "reason": assignment.get("reason")}
+    try:
+        inventory = ComfyUIClient(
+            settings.comfyui_url, min(settings.request_timeout_seconds, 10),
+        ).model_inventory()
+    except (ComfyUIError, OSError) as exc:
+        return 2, {"status": "backend_unavailable", "reason": str(exc)}
+    checkpoints = inventory.get("checkpoints", [])
+    if not checkpoints:
+        return 2, {
+            "status": "no_eligible_model",
+            "reason": "No ComfyUI checkpoint installed for image/video generation.",
+        }
+    prompt_text = f"{task.get('title', '')}. {task.get('objective', '')}".strip()[:4000]
+    acceptance = list(task.get("acceptance_criteria") or []) or [
+        "Generated asset matches the sprint objective",
+    ]
+    job_args = argparse.Namespace(
+        project=str(project),
+        template=template_id,
+        param=[f"checkpoint={checkpoints[0]}", f"prompt={prompt_text}"],
+        acceptance=acceptance,
+        timeout=args.timeout,
+        max_attempts=args.max_attempts,
+        release_ollama=False,
+        verifier_model="qwen3-vl:8b-instruct",
+    )
+    job_code, job_payload = _captured_command(cmd_visual_job, job_args)
+    if job_code != 0 or not isinstance(job_payload, dict) or not job_payload.get("job_path"):
+        return job_code or 2, {"status": "visual_job_failed", "result": job_payload}
+    run_args = argparse.Namespace(
+        project=str(project), job=job_payload["job_path"], verify_timeout=args.timeout,
+    )
+    run_code, run_payload = _captured_command(cmd_visual_run, run_args)
+    return run_code, {"status": "coordinator_review_required", "job": job_payload, "run": run_payload}
+
+
 def cmd_work(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     settings, _ = load_settings(project)
@@ -1477,6 +1525,28 @@ def cmd_work(args: argparse.Namespace) -> int:
                 "reason": "Supply --image for the assigned vision station.",
             })
             final_code = max(final_code, 2)
+            continue
+        if category in GENERATION_STATION_OUTPUT_TYPES:
+            code, visual_payload = _dispatch_visual_task(project, settings, task, assignment, args)
+            results.append({
+                "task_id": task.get("id"),
+                "model": model,
+                "category": category,
+                "exit_code": code,
+                "result": visual_payload,
+            })
+            final_code = max(final_code, code)
+            ledger["tasks"][str(task.get("id"))] = {
+                "status": "coordinator_review_required" if code == 0 else "attention_required",
+                "updated_at": utc_now(),
+                "model": model,
+                "category": category,
+                "run_id": None,
+                "work_artifact": str(artifact),
+                "result_summary": None,
+                "exit_code": code,
+                "support_review_exit_code": None,
+            }
             continue
         if category not in STRENGTH_CASES or not isinstance(model, str) or not model:
             results.append({
@@ -1949,7 +2019,13 @@ def _add_job_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--context-file", help="Explicit text file to store in job and send to local worker.")
-    parser.add_argument("--category", choices=["analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding"])
+    parser.add_argument(
+        "--category",
+        choices=[
+            "analysis", "coding", "planning", "vision", "writing", "retrieval", "embedding",
+            "image_generation", "video_generation",
+        ],
+    )
     parser.add_argument("--model")
     parser.add_argument("--prefer-speed", action="store_true")
     parser.add_argument("--allowed-file", action="append", default=[])

@@ -76,6 +76,20 @@ class RouterTests(unittest.TestCase):
         decision = route(RouteRequest(task="Create embeddings", required_capability="embedding"), self.models)
         self.assertEqual(decision.selected_model, "qwen3-embedding:0.6b")
 
+    def test_classifies_image_generation(self):
+        self.assertEqual(classify_task("Generate image concept art for the cover"), "image_generation")
+
+    def test_classifies_video_generation(self):
+        self.assertEqual(classify_task("Generate video for the trailer"), "video_generation")
+
+    def test_no_ollama_model_can_fulfill_image_generation(self):
+        decision = route(
+            RouteRequest(task="Generate concept art", required_capability="image_generation"),
+            self.models,
+        )
+        self.assertIsNone(decision.selected_model)
+        self.assertIn("ComfyUI", decision.explanation)
+
 
 if __name__ == "__main__":
     unittest.main()
